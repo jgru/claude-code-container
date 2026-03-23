@@ -25,7 +25,6 @@ fi
 if [ -n "${GITLAB_TOKEN:-}" ]; then
     for host in \
         "gitlab.com" \
-        # Add more gitlab instances if needed
     ; do
         gosu "$RUN_UID" git config --global url."https://${host}/".insteadOf "git@${host}:"
         gosu "$RUN_UID" git config --global url."https://${host}/".insteadOf "ssh://git@${host}/"
