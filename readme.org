@@ -104,6 +104,41 @@ CLAUDE_NO_GIT_REWRITE=0   # always rewrite (even without a token in .env)
 
 Set this in your shell environment or in the project =.env=.
 
+* Named instances
+
+Run multiple Claude agents on the same codebase without conflicts.
+Each named instance gets its own isolated state directory under
+=~/.config/claude-devcontainer/instances/<name>/=.
+
+#+begin_src sh
+# Launch two agents in parallel
+claude-docker -i stan
+claude-docker -i kyle
+#+end_src
+
+Instance state is stored in:
+#+begin_example
+~/.config/claude-devcontainer/instances/
+  stan/
+    .seeded          # Sentinel (instance has been initialised)
+    claude/          # Claude state (~/.claude)
+    claude.json      # Claude config (~/.claude.json)
+  kyle/
+    ...
+#+end_example
+
+On first launch, credentials and config are copied from the host's
+=~/.claude/= and =~/.claude.json= so the instance starts authenticated.
+After that, each instance maintains its own state independently.
+
+To re-seed an instance (e.g. after re-authenticating on the host):
+#+begin_src sh
+rm ~/.config/claude-devcontainer/instances/stan/.seeded
+#+end_src
+
+Without =--instance=, the default behaviour is unchanged: =~/.claude= is
+shared and the concurrent-instance warning remains active.
+
 * Network
 
 No firewall — full network access. Protection is *filesystem isolation*: the

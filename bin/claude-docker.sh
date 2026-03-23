@@ -10,6 +10,21 @@ set -eo pipefail
 IMAGE="claude-devcontainer"
 BUILD_DIR="${CLAUDE_DEVCONTAINER_DIR:-${HOME}/.config/claude-devcontainer}"
 
+# ── Parse wrapper flags (consumed here, not passed to claude) ──
+INSTANCE=""
+CLAUDE_ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -i|--instance)
+            INSTANCE="$2"; shift 2 ;;
+        --instance=*)
+            INSTANCE="${1#--instance=}"; shift ;;
+        *)
+            CLAUDE_ARGS+=("$1"); shift ;;
+    esac
+done
+set -- "${CLAUDE_ARGS[@]}"
+
 # ── Build if missing ──
 if ! docker image inspect "$IMAGE" &>/dev/null; then
     echo "[claude] Building image..." >&2
@@ -86,15 +101,17 @@ ENV_ARGS=()
 [ -n "${CLAUDE_NO_GIT_REWRITE:-}" ]     && ENV_ARGS+=(-e "CLAUDE_NO_GIT_REWRITE=${CLAUDE_NO_GIT_REWRITE}")
 
 # ── Concurrent-instance guard ──
-# Warn if another container is already running with this exact workspace mounted.
-_CONFLICT=$(docker ps --filter "name=claude-code-" --format "{{.ID}} {{.Names}}" 2>/dev/null \
-    | while read -r _id _name; do
-        docker inspect "$_id" --format '{{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null \
-            | grep -qF "${WORKSPACE}" && echo "$_name"
-    done)
-if [ -n "$_CONFLICT" ]; then
-    echo "[claude] Warning: another claude-docker is already running in this directory ($_CONFLICT)." >&2
-    echo "[claude] Two instances sharing the same workspace can cause git remote conflicts." >&2
+# Named instances have isolated state, so only warn for unnamed instances.
+if [ -z "$INSTANCE" ]; then
+    _CONFLICT=$(docker ps --filter "name=claude-code-" --format "{{.ID}} {{.Names}}" 2>/dev/null \
+        | while read -r _id _name; do
+            docker inspect "$_id" --format '{{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null \
+                | grep -qF "${WORKSPACE}" && echo "$_name"
+        done)
+    if [ -n "$_CONFLICT" ]; then
+        echo "[claude] Warning: another claude-docker is already running in this directory ($_CONFLICT)." >&2
+        echo "[claude] Two instances sharing the same workspace can cause git remote conflicts." >&2
+    fi
 fi
 
 # ── Run ──
@@ -105,12 +122,36 @@ if [ -t 0 ]; then
 fi
 
 # Volume mounts
-VOL_ARGS=(
-    -v "${HOME}/.claude:/home/node/.claude"
-    -v "${WORKSPACE}:${WORKSPACE}"
-)
-# Only mount .claude.json if it exists — Docker creates an empty directory otherwise
-[ -f "${HOME}/.claude.json" ] && VOL_ARGS+=(-v "${HOME}/.claude.json:/home/node/.claude.json")
+if [ -n "$INSTANCE" ]; then
+    # Named instance: isolated state directory
+    INSTANCE_DIR="${BUILD_DIR}/instances/${INSTANCE}"
+    mkdir -p "${INSTANCE_DIR}/claude"
+    # Seed new instance with host credentials/config on first creation
+    if [ ! -f "${INSTANCE_DIR}/.seeded" ]; then
+        for f in "${HOME}/.claude"/*; do
+            [ -f "$f" ] && cp "$f" "${INSTANCE_DIR}/claude/"
+        done
+        if [ -f "${HOME}/.claude.json" ]; then
+            cp "${HOME}/.claude.json" "${INSTANCE_DIR}/claude.json"
+        else
+            echo '{}' > "${INSTANCE_DIR}/claude.json"
+        fi
+        touch "${INSTANCE_DIR}/.seeded"
+    fi
+    VOL_ARGS=(
+        -v "${INSTANCE_DIR}/claude:/home/node/.claude"
+        -v "${INSTANCE_DIR}/claude.json:/home/node/.claude.json"
+        -v "${WORKSPACE}:${WORKSPACE}"
+    )
+else
+    # Default: shared state
+    VOL_ARGS=(
+        -v "${HOME}/.claude:/home/node/.claude"
+        -v "${WORKSPACE}:${WORKSPACE}"
+    )
+    # Only mount .claude.json if it exists — Docker creates an empty directory otherwise
+    [ -f "${HOME}/.claude.json" ] && VOL_ARGS+=(-v "${HOME}/.claude.json:/home/node/.claude.json")
+fi
 
 # Worktree support: mount the main repo's .git dir if workspace is a worktree
 # In a worktree, .git is a file pointing outside the workspace — git breaks without it
@@ -123,9 +164,18 @@ if [ -f "${WORKSPACE}/.git" ]; then
     fi
 fi
 
+CONTAINER_NAME="claude-code-${INSTANCE:-$$}"
+
+# Named instances use a deterministic container name — check for conflicts
+if [ -n "$INSTANCE" ] && docker ps -q --filter "name=^${CONTAINER_NAME}$" 2>/dev/null | grep -q .; then
+    echo "[claude] Instance '${INSTANCE}' is already running." >&2
+    echo "[claude] Stop it with: docker stop ${CONTAINER_NAME}" >&2
+    exit 1
+fi
+
 exec docker run \
     "${DOCKER_ARGS[@]}" \
-    --name "claude-code-$$" \
+    --name "${CONTAINER_NAME}" \
     -e CLAUDE_USER="$(id -u)" \
     "${VOL_ARGS[@]}" \
     -w "${WORKSPACE}" \
