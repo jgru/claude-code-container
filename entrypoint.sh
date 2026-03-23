@@ -8,34 +8,74 @@ if ! getent passwd "$RUN_UID" &>/dev/null; then
     echo "claude:x:${RUN_UID}:${RUN_UID}::/home/node:/bin/bash" >> /etc/passwd
 fi
 
+export HOME="/home/node"
+
 # ── Git config ──
-# Use a temp dir for .gitconfig (macOS Docker bind mounts are not writable)
+# Write to a temp file — macOS bind mounts may not let us write to $HOME
 GIT_HOME=$(mktemp -d)
 chown "$RUN_UID" "$GIT_HOME"
 export GIT_CONFIG_GLOBAL="$GIT_HOME/.gitconfig"
 
-gosu "$RUN_UID" git config --global credential.helper token
+run_as() { gosu "$RUN_UID" "$@"; }
 
+run_as git config --global credential.helper token
+run_as git config --global user.name  "${GIT_AUTHOR_NAME:-Claude Code}"
+run_as git config --global user.email "${GIT_AUTHOR_EMAIL:-claude@devcontainer}"
+run_as git config --global --add safe.directory "${PWD:-/workspace}"
+
+# insteadOf rewrites — safety net for submodules and hardcoded URLs
 if [ -n "${GITHUB_TOKEN:-}" ]; then
-    gosu "$RUN_UID" git config --global url."https://github.com/".insteadOf "git@github.com:"
-    gosu "$RUN_UID" git config --global url."https://github.com/".insteadOf "ssh://git@github.com/"
+    run_as git config --global url."https://github.com/".insteadOf  "git@github.com:"
+    run_as git config --global url."https://github.com/".insteadOf  "ssh://git@github.com/"
     echo "[git] GitHub token configured"
 fi
-
 if [ -n "${GITLAB_TOKEN:-}" ]; then
-    for host in \
-        "gitlab.com" \
-    ; do
-        gosu "$RUN_UID" git config --global url."https://${host}/".insteadOf "git@${host}:"
-        gosu "$RUN_UID" git config --global url."https://${host}/".insteadOf "ssh://git@${host}/"
+    for host in "gitlab.com"; do
+        run_as git config --global url."https://${host}/".insteadOf "git@${host}:"
+        run_as git config --global url."https://${host}/".insteadOf "ssh://git@${host}/"
     done
     echo "[git] GitLab token configured"
 fi
 
-gosu "$RUN_UID" git config --global user.name "${GIT_AUTHOR_NAME:-Claude Code}"
-gosu "$RUN_UID" git config --global user.email "${GIT_AUTHOR_EMAIL:-claude@devcontainer}"
-gosu "$RUN_UID" git config --global --add safe.directory "${PWD:-/workspace}"
+# ── Rewrite SSH remotes to HTTPS ──────────────────────────────────────
+# Claude Code inspects `git remote -v`; if the URL looks like SSH it
+# refuses to push (ssh client is not in the container).  The insteadOf
+# rules above only affect git's transport layer — `git remote -v` still
+# shows the original SSH URL.  So we rewrite the configured remote URLs
+# directly and restore them when the container exits.
 
-# ── Drop privileges and exec claude ──
-export HOME=/home/node
-exec gosu "$RUN_UID" claude "$@"
+declare -A _SAVED=()
+
+if [ -d "${PWD}/.git" ]; then
+    for name in $(run_as git remote 2>/dev/null); do
+        url=$(run_as git remote get-url "$name" 2>/dev/null) || continue
+        new=""
+        case "$url" in
+            git@github.com:*)       [ -n "${GITHUB_TOKEN:-}" ] && new="https://github.com/${url#git@github.com:}" ;;
+            ssh://git@github.com/*) [ -n "${GITHUB_TOKEN:-}" ] && new="https://github.com/${url#ssh://git@github.com/}" ;;
+            git@gitlab.com:*)       [ -n "${GITLAB_TOKEN:-}" ] && new="https://gitlab.com/${url#git@gitlab.com:}" ;;
+            ssh://git@gitlab.com/*) [ -n "${GITLAB_TOKEN:-}" ] && new="https://gitlab.com/${url#ssh://git@gitlab.com/}" ;;
+        esac
+        if [ -n "$new" ]; then
+            _SAVED[$name]="$url"
+            run_as git remote set-url "$name" "$new"
+            echo "[git] Rewrote remote '$name' → HTTPS"
+        fi
+    done
+fi
+
+restore_remotes() {
+    for name in "${!_SAVED[@]}"; do
+        run_as git remote set-url "$name" "${_SAVED[$name]}" 2>/dev/null || true
+    done
+}
+
+# ── Run claude, then restore remotes ──────────────────────────────────
+# Cannot use exec — the EXIT trap must fire to put SSH URLs back.
+trap restore_remotes EXIT
+trap 'kill -TERM $PID 2>/dev/null' TERM INT
+
+gosu "$RUN_UID" claude "$@" &
+PID=$!
+wait "$PID" 2>/dev/null
+exit $?
