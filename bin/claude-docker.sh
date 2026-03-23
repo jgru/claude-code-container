@@ -25,6 +25,11 @@ while [ $# -gt 0 ]; do
 done
 set -- "${CLAUDE_ARGS[@]}"
 
+if [ -n "$INSTANCE" ] && ! [[ "$INSTANCE" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "[claude] Invalid instance name '${INSTANCE}': only [a-zA-Z0-9._-] allowed." >&2
+    exit 1
+fi
+
 # ── Build if missing ──
 if ! docker image inspect "$IMAGE" &>/dev/null; then
     echo "[claude] Building image..." >&2
