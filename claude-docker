@@ -88,13 +88,19 @@ if [ "${CLAUDE_FIREWALL:-}" = "true" ]; then
     DOCKER_ARGS+=(--cap-add=NET_ADMIN --cap-add=NET_RAW)
 fi
 
+# Volume mounts
+VOL_ARGS=(
+    -v "${HOME}/.claude:/home/node/.claude"
+    -v "${WORKSPACE}:${WORKSPACE}"
+)
+# Only mount .claude.json if it exists — Docker creates an empty directory otherwise
+[ -f "${HOME}/.claude.json" ] && VOL_ARGS+=(-v "${HOME}/.claude.json:/home/node/.claude.json")
+
 exec docker run \
     "${DOCKER_ARGS[@]}" \
     --name "claude-code-$$" \
     -e CLAUDE_USER="$(id -u)" \
-    -v "${HOME}/.claude:/home/node/.claude" \
-    -v "${HOME}/.claude.json:/home/node/.claude.json" \
-    -v "${WORKSPACE}:${WORKSPACE}" \
+    "${VOL_ARGS[@]}" \
     -w "${WORKSPACE}" \
     "${ENV_ARGS[@]}" \
     "$IMAGE" "$@"
