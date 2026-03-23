@@ -42,22 +42,33 @@ fi
 # refuses to push (ssh client is not in the container).  The insteadOf
 # rules above only affect git's transport layer — `git remote -v` still
 # shows the original SSH URL.  So we rewrite the configured remote URLs
-# directly and restore them when the container exits.
+# directly and restore them when the last container exits.
+#
+# A flock-guarded refcount tracks how many containers are using the
+# rewritten URLs.  The first container saves the original URLs and
+# rewrites; subsequent containers just bump the count.  On exit each
+# container decrements; the last one (count reaches 0) restores the
+# original URLs.
 #
 # Set CLAUDE_NO_GIT_REWRITE=1 to skip this (e.g. when no token is configured).
 
-declare -A _SAVED=()
-_DID_REWRITE=false
+_REWRITE_DIR=""
 
 if [ -d "${PWD}/.git" ] && [ -z "${CLAUDE_NO_GIT_REWRITE:-}" ]; then
-    # Use an exclusive flock so only the first concurrent container rewrites
-    # remote URLs.  Subsequent containers see the lock is held and skip both
-    # the rewrite and the restore — preventing them from flipping URLs back
-    # to SSH while the first container is still running.
-    _LOCK="${PWD}/.git/claude-docker-rewrite.lock"
+    _REWRITE_DIR="${PWD}/.git/claude-docker-rewrite"
+    mkdir -p "$_REWRITE_DIR"
+    _LOCK="${_REWRITE_DIR}/lock"
+    _COUNT_FILE="${_REWRITE_DIR}/count"
+    _SAVED_DIR="${_REWRITE_DIR}/saved"
+
     exec 9>"$_LOCK"
-    if flock -n 9; then
-        _DID_REWRITE=true
+    flock 9
+
+    _COUNT=$(cat "$_COUNT_FILE" 2>/dev/null || echo 0)
+
+    if [ "$_COUNT" -eq 0 ]; then
+        # First container: save original URLs and rewrite
+        mkdir -p "$_SAVED_DIR"
         for name in $(run_as git remote 2>/dev/null); do
             url=$(run_as git remote get-url "$name" 2>/dev/null) || continue
             new=""
@@ -68,28 +79,51 @@ if [ -d "${PWD}/.git" ] && [ -z "${CLAUDE_NO_GIT_REWRITE:-}" ]; then
                 ssh://git@gitlab.com/*) [ -n "${GITLAB_TOKEN:-}" ] && new="https://gitlab.com/${url#ssh://git@gitlab.com/}" ;;
             esac
             if [ -n "$new" ]; then
-                _SAVED[$name]="$url"
+                echo "$url" > "$_SAVED_DIR/$name"
                 run_as git remote set-url "$name" "$new"
                 echo "[git] Rewrote remote '$name' → HTTPS"
             fi
         done
-    else
-        echo "[git] Another claude-docker holds the rewrite lock; skipping remote URL rewrite" >&2
     fi
+
+    echo $(( _COUNT + 1 )) > "$_COUNT_FILE"
+    flock -u 9
 fi
 
-restore_remotes() {
-    if $_DID_REWRITE; then
-        for name in "${!_SAVED[@]}"; do
-            run_as git remote set-url "$name" "${_SAVED[$name]}" 2>/dev/null || true
-        done
+cleanup() {
+    [ -z "$_REWRITE_DIR" ] && return
+    _LOCK="${_REWRITE_DIR}/lock"
+    _COUNT_FILE="${_REWRITE_DIR}/count"
+    _SAVED_DIR="${_REWRITE_DIR}/saved"
+
+    exec 9>"$_LOCK"
+    flock 9
+
+    _COUNT=$(cat "$_COUNT_FILE" 2>/dev/null || echo 1)
+    _COUNT=$(( _COUNT - 1 ))
+
+    if [ "$_COUNT" -le 0 ]; then
+        # Last container: restore original URLs
+        if [ -d "$_SAVED_DIR" ]; then
+            for f in "$_SAVED_DIR"/*; do
+                [ -f "$f" ] || continue
+                name="$(basename "$f")"
+                url="$(cat "$f")"
+                run_as git remote set-url "$name" "$url" 2>/dev/null || true
+            done
+            rm -rf "$_SAVED_DIR"
+        fi
+        rm -f "$_COUNT_FILE"
+    else
+        echo "$_COUNT" > "$_COUNT_FILE"
     fi
-    # fd 9 (flock) is released automatically when the process exits
+
+    flock -u 9
 }
 
-# ── Run claude, then restore remotes ──────────────────────────────────
-# Cannot use exec — the EXIT trap must fire to put SSH URLs back.
-trap restore_remotes EXIT
+# ── Run claude, then clean up ─────────────────────────────────────────
+# Cannot use exec — the EXIT trap must fire to restore remotes.
+trap cleanup EXIT
 trap 'kill -TERM $PID 2>/dev/null' TERM INT
 
 gosu "$RUN_UID" claude "$@" &
