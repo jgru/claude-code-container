@@ -133,10 +133,10 @@ After that, each instance maintains its own state independently —
 conversation history, project memory, and settings persist across runs.
 Re-seeding on every launch would discard all of that accumulated state.
 
-Stale instances (unused for 7 days) are pruned automatically. To force a
-fresh start, delete the instance directory:
+Stale instances (unused for 7 days) are pruned automatically. To
+manually prune a specific instance:
 #+begin_src sh
-rm -rf ~/.config/claude-devcontainer/instances/kyle
+claude-docker --prune kyle
 #+end_src
 
 To re-seed an instance (e.g. after re-authenticating on the host):
