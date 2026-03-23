@@ -10,6 +10,17 @@ fi
 
 export HOME="/home/node"
 
+# ── Fill from read-only seed (named instances) ──
+if [ -d /home/node/.claude-seed ]; then
+    mkdir -p /home/node/.claude
+    cp -a /home/node/.claude-seed/. /home/node/.claude/
+    chown -R "$RUN_UID" /home/node/.claude
+fi
+if [ -f /home/node/.claude.json.seed ]; then
+    cp /home/node/.claude.json.seed /home/node/.claude.json
+    chown "$RUN_UID" /home/node/.claude.json
+fi
+
 # ── Git config ──
 # Write to a temp file — macOS bind mounts may not let us write to $HOME
 GIT_HOME=$(mktemp -d)

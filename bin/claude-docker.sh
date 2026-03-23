@@ -156,9 +156,10 @@ if [ -n "$INSTANCE" ]; then
         fi
         touch "${INSTANCE_DIR}/.seeded"
     fi
+    touch "${INSTANCE_DIR}/.last-used"
     VOL_ARGS=(
-        -v "${INSTANCE_DIR}/claude:/home/node/.claude"
-        -v "${INSTANCE_DIR}/claude.json:/home/node/.claude.json"
+        -v "${INSTANCE_DIR}/claude:/home/node/.claude-seed:ro"
+        -v "${INSTANCE_DIR}/claude.json:/home/node/.claude.json.seed:ro"
         -v "${WORKSPACE}:${WORKSPACE}"
     )
 else
