@@ -3,6 +3,10 @@ set -e
 
 # ── Determine user ──
 RUN_UID="${CLAUDE_USER:-1000}"
+if ! [[ "$RUN_UID" =~ ^[0-9]+$ ]]; then
+    echo "[entrypoint] Error: CLAUDE_USER must be numeric, got '${RUN_UID}'" >&2
+    exit 1
+fi
 
 if ! getent passwd "$RUN_UID" &>/dev/null; then
     echo "claude:x:${RUN_UID}:${RUN_UID}::/home/node:/bin/bash" >> /etc/passwd
