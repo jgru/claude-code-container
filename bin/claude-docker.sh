@@ -239,7 +239,7 @@ fi
 if [ -n "$INSTANCE" ]; then
     # Named instance: isolated state directory
     INSTANCE_DIR="${BUILD_DIR}/instances/${INSTANCE}"
-    mkdir -p "${INSTANCE_DIR}/claude"
+    mkdir -p "${INSTANCE_DIR}/claude" "${INSTANCE_DIR}/state"
     # Seed new instance with host credentials/config on first creation
     _SEED_LOCK="${INSTANCE_DIR}/.seed-lock"
     if [ ! -f "${INSTANCE_DIR}/.seeded" ]; then
@@ -271,7 +271,8 @@ if [ -n "$INSTANCE" ]; then
     touch "${INSTANCE_DIR}/.last-used"
     printf '%s' "${WORKSPACE}" > "${INSTANCE_DIR}/.workspace"
     VOL_ARGS=(
-        -v "${INSTANCE_DIR}/claude:/home/node/.claude"
+        -v "${INSTANCE_DIR}/claude:/home/node/.claude-seed:ro"
+        -v "${INSTANCE_DIR}/state:/home/node/.claude"
         -v "${INSTANCE_DIR}/claude.json:/home/node/.claude.json"
         -v "${WORKSPACE}:${WORKSPACE}"
     )

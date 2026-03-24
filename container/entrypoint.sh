@@ -21,15 +21,13 @@ if [ -f /run/secrets/env ]; then
     set +a
 fi
 
-# ── Fill from read-only seed (named instances) ──
-if [ -d /home/node/.claude-seed ]; then
-    mkdir -p /home/node/.claude
+# ── Seed new named instance state (first use only) ──
+# The seed is mounted read-only; on first use copy it into the writable state
+# directory so the instance starts authenticated.  Subsequent runs skip this
+# and use the already-accumulated state directly.
+if [ -d /home/node/.claude-seed ] && [ -z "$(ls -A /home/node/.claude 2>/dev/null)" ]; then
     cp -a /home/node/.claude-seed/. /home/node/.claude/
     chown -R "$RUN_UID" /home/node/.claude
-fi
-if [ -f /home/node/.claude.json.seed ]; then
-    cp /home/node/.claude.json.seed /home/node/.claude.json
-    chown "$RUN_UID" /home/node/.claude.json
 fi
 
 # ── Git config ──
