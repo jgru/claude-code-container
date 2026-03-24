@@ -120,18 +120,24 @@ Instance state is stored in:
 #+begin_example
 ~/.config/claude-devcontainer/instances/
   stan/
-    .seeded          # Sentinel (instance has been initialised)
-    claude/          # Claude state (~/.claude)
-    claude.json      # Claude config (~/.claude.json)
+    .seeded          # Sentinel: seed dir was populated from host
+    claude/          # Seed — credentials copied once from ~/.claude (read-only in container)
+    claude.json      # Claude account config (~/.claude.json), writable
+    state/           # Persistent session state (conversation history, memory, settings)
   kyle/
     ...
 #+end_example
 
-On first launch, credentials and config are copied from the host's
-=~/.claude/= and =~/.claude.json= so the instance starts authenticated.
-After that, each instance maintains its own state independently —
-conversation history, project memory, and settings persist across runs.
-Re-seeding on every launch would discard all of that accumulated state.
+On first launch, credentials are copied from =~/.claude/= into =claude/=
+(the seed). Inside the container the seed is mounted read-only; the
+=state/= directory is mounted read-write and seeded from =claude/= on
+first use. After that every session reads and writes =state/= directly —
+conversation history, project memory, and settings all persist across
+runs.
+
+This split keeps the original credentials frozen in =claude/= (they can
+never be modified from inside the container) while =state/= accumulates
+freely.
 
 Stale instances (unused for 7 days) are pruned automatically. To
 manually prune a specific instance:
@@ -141,7 +147,10 @@ claude-docker -i kyle --prune
 
 To re-seed an instance (e.g. after re-authenticating on the host):
 #+begin_src sh
+# 1. Re-copy fresh credentials from ~/.claude into the seed dir
 rm ~/.config/claude-devcontainer/instances/stan/.seeded
+# 2. Clear accumulated state so the container re-initialises from the new seed
+rm -rf ~/.config/claude-devcontainer/instances/stan/state/
 #+end_src
 
 To list all instances with their associated project and status:

@@ -33,7 +33,8 @@
 Set interactively with `claude-code-ide-ext-set-instance' or per-project
 via .dir-locals.el:
 
-  ((nil . ((claude-code-ide-ext-instance . \"stan\"))))")
+  ((nil . ((claude-code-ide-ext-instance . \"stan\")))))")
+(put 'claude-code-ide-ext-instance 'safe-local-variable #'stringp)
 
 ;;; Package setup
 
