@@ -211,7 +211,7 @@ Set a default instance per project via =.dir-locals.el=:
 
 | Variable                              | Default                        | Description                      |
 |---------------------------------------+--------------------------------+----------------------------------|
-| =claude-code-ide-ext-docker-cli=      | =~/.local/bin/claude=          | Path to the Docker wrapper       |
+| =claude-code-ide-ext-docker-cli=      | =~/.local/bin/claude-docker=   | Path to the Docker wrapper       |
 | =claude-code-ide-ext-bare-cli=        | =claude=                       | Path to the native CLI           |
 | =claude-code-ide-ext-use-docker=      | =t=                            | Use Docker wrapper when non-nil  |
 | =claude-code-ide-ext-instances-dir=   | =~/.config/claude-devcontainer/instances/= | Instance state directory |

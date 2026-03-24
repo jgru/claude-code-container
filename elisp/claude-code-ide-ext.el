@@ -11,7 +11,7 @@
   :prefix "claude-code-ide-ext-")
 
 (defcustom claude-code-ide-ext-docker-cli
-  (expand-file-name "~/.local/bin/claude")
+  (expand-file-name "~/.local/bin/claude-docker")
   "Path to the dockerized claude-docker wrapper."
   :type 'string)
 

@@ -3,7 +3,7 @@
 # Reads git tokens + settings from the project's .env file.
 #
 # Install:
-#   cp claude-docker ~/.local/bin/claude && chmod +x ~/.local/bin/claude
+#   cp claude-docker.sh ~/.local/bin/claude-docker && chmod +x ~/.local/bin/claude-docker
 
 set -eo pipefail
 
@@ -221,6 +221,16 @@ fi
 DOCKER_ARGS=(--rm -i)
 if [ -t 0 ]; then
     DOCKER_ARGS+=(-t)
+fi
+
+# ── IDE integration (Emacs claude-code-ide) ──
+# The IDE starts an MCP server on the host; the container must reach it.
+if [ -n "${CLAUDE_CODE_SSE_PORT:-}" ]; then
+    ENV_ARGS+=(-e "CLAUDE_CODE_SSE_PORT=${CLAUDE_CODE_SSE_PORT}")
+    ENV_ARGS+=(-e "ENABLE_IDE_INTEGRATION=true")
+    [ -n "${TERM_PROGRAM:-}" ]         && ENV_ARGS+=(-e "TERM_PROGRAM=${TERM_PROGRAM}")
+    [ -n "${FORCE_CODE_TERMINAL:-}" ]  && ENV_ARGS+=(-e "FORCE_CODE_TERMINAL=${FORCE_CODE_TERMINAL}")
+    DOCKER_ARGS+=(--network host)
 fi
 
 # Volume mounts
