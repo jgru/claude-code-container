@@ -15,7 +15,7 @@ container/
   Dockerfile              Claude Code based on node 22
   entrypoint.sh           git tokens -> exec claude
   git-credential-token    Credential helper (reads tokens from env)
-emacs/
+elisp/
   claude-code-ide-ext.el  Emacs configuration
 .env.example              Template .env for projects
 #+end_example
@@ -166,7 +166,7 @@ container only sees the current project directory.
 
 * Emacs
 
-=emacs/claude-code-ide-ext.el= extends
+=elisp/claude-code-ide-ext.el= extends
 [[https://github.com/manzaltu/claude-code-ide.el][claude-code-ide]] with Docker wrapper support, named instances,
 and an optional native (non-dockerized) mode.
 
@@ -177,13 +177,13 @@ With =use-package= + =straight.el= (recommended):
 #+begin_src emacs-lisp
 (use-package claude-code-ide-ext
   :straight (:type git :host github :repo "jgru/claude-code-container"
-             :files ("emacs/claude-code-ide-ext.el")))
+             :files ("elisp/claude-code-ide-ext.el")))
 #+end_src
 
 Or load from a local checkout:
 
 #+begin_src emacs-lisp
-(add-to-list 'load-path "/path/to/claude-code-container/emacs")
+(add-to-list 'load-path "/path/to/claude-code-container/elisp")
 (require 'claude-code-ide-ext)
 #+end_src
 
