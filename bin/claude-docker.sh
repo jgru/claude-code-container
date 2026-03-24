@@ -211,7 +211,7 @@ if [ -z "$INSTANCE" ]; then
         | while read -r _id _name; do
             docker inspect "$_id" --format '{{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null \
                 | grep -qF "${WORKSPACE}" && echo "$_name"
-        done)
+        done) || true
     if [ -n "$_CONFLICT" ]; then
         echo "[claude] Warning: another claude-docker is already running in this directory ($_CONFLICT)." >&2
         echo "[claude] Two instances sharing the same workspace can cause git remote conflicts." >&2
@@ -271,8 +271,8 @@ if [ -n "$INSTANCE" ]; then
     touch "${INSTANCE_DIR}/.last-used"
     printf '%s' "${WORKSPACE}" > "${INSTANCE_DIR}/.workspace"
     VOL_ARGS=(
-        -v "${INSTANCE_DIR}/claude:/home/node/.claude-seed:ro"
-        -v "${INSTANCE_DIR}/claude.json:/home/node/.claude.json.seed:ro"
+        -v "${INSTANCE_DIR}/claude:/home/node/.claude"
+        -v "${INSTANCE_DIR}/claude.json:/home/node/.claude.json"
         -v "${WORKSPACE}:${WORKSPACE}"
     )
 else
