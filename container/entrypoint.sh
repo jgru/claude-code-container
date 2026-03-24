@@ -151,19 +151,12 @@ cleanup() {
 if [ -n "${CLAUDE_CODE_SSE_PORT:-}" ] && [ -n "${ENABLE_IDE_INTEGRATION:-}" ]; then
     _HOST_IP=$(getent hosts host.docker.internal 2>/dev/null | awk '{print $1}')
     if [ -n "$_HOST_IP" ]; then
-        gosu "$RUN_UID" node -e "
-          var n=require('net'),p=${CLAUDE_CODE_SSE_PORT},h='${_HOST_IP}';
-          var s=n.createServer(function(c){
-            var u=n.connect(p,h);
-            c.pipe(u);u.pipe(c);
-            c.on('error',function(){u.destroy()});
-            u.on('error',function(){c.destroy()});
-          });
-          s.on('error',function(){});
-          s.listen(p,'127.0.0.1');
-        " &
+        gosu "$RUN_UID" \
+          socat TCP-LISTEN:"${CLAUDE_CODE_SSE_PORT}",bind=127.0.0.1,reuseaddr,fork \
+                TCP:"${_HOST_IP}":"${CLAUDE_CODE_SSE_PORT}" 2>/dev/null &
     fi
 fi
+
 # ── Run claude, then clean up ─────────────────────────────────────────
 # Cannot use exec — the EXIT trap must fire to restore remotes.
 trap cleanup EXIT

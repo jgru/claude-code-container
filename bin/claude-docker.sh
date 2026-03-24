@@ -286,9 +286,16 @@ else
     [ -f "${HOME}/.claude.json" ] && VOL_ARGS+=(-v "${HOME}/.claude.json:/home/node/.claude.json")
 fi
 
+# IDE integration: mount lockfiles so Claude Code discovers the MCP
+# server. Emacs claude code package writes lockfiles to
+# ~/.claude/ide/<port>.lock on the host. For named instances the
+# container's ~/.claude is a separate volume, so without this
+# sub-mount Claude Code can't find the lockfile and never connects to
+# the WebSocket server.
 if [ -n "${CLAUDE_CODE_SSE_PORT:-}" ] && [ -d "${HOME}/.claude/ide" ]; then
     VOL_ARGS+=(-v "${HOME}/.claude/ide:/home/node/.claude/ide:ro")
 fi
+
 # Worktree support: mount the main repo's .git dir if workspace is a worktree
 # In a worktree, .git is a file pointing outside the workspace — git breaks without it
 if [ -f "${WORKSPACE}/.git" ]; then
