@@ -23,6 +23,7 @@ RUN mkdir -p /home/${USERNAME}/.claude \
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY git-credential-token /usr/local/bin/git-credential-token
+COPY settings.json /etc/claude/settings.json
 RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh /usr/local/bin/git-credential-token \
     && chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/git-credential-token
 
