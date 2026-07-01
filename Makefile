@@ -12,16 +12,16 @@ help:
 
 install:
 	mkdir -p $(CONFIG_DIR) $(BIN_DIR)
-	cp container/Dockerfile container/entrypoint.sh container/git-credential-token $(CONFIG_DIR)/
+	cp container/Dockerfile.full container/entrypoint.sh container/git-credential-token container/settings.json $(CONFIG_DIR)/
 	chmod +x $(CONFIG_DIR)/entrypoint.sh $(CONFIG_DIR)/git-credential-token
 	cp bin/claude-docker.sh $(BIN_DIR)/claude-docker
 	chmod +x $(BIN_DIR)/claude-docker
 
 build:
-	docker build -t claude-devcontainer $(CONFIG_DIR)/
+	docker build -t claude-devcontainer -f $(CONFIG_DIR)/Dockerfile.full $(CONFIG_DIR)/
 
 rebuild:
-	docker build --no-cache -t claude-devcontainer $(CONFIG_DIR)/
+	docker build --no-cache -t claude-devcontainer -f $(CONFIG_DIR)/Dockerfile.full $(CONFIG_DIR)/
 
 test:
 	docker run --rm -it \

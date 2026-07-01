@@ -1,3 +1,4 @@
+
 FROM node:22-slim
 
 ARG USERNAME=node
@@ -11,6 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gosu \
     socat \
+    texlive-full \
+    poppler-utils \
+    python3-pip \
+    python3-venv \
+    build-essential \
+    automake autopoint libtool pkg-config flex bison byacc \
     sudo \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -24,15 +31,38 @@ RUN printf '%s\n' 'node ALL=(ALL) NOPASSWD:ALL' 'claude ALL=(ALL) NOPASSWD:ALL' 
         > /etc/sudoers.d/claude-agent \
     && chmod 0440 /etc/sudoers.d/claude-agent
 
-RUN npm install -g @modelcontextprotocol/server-github
-
 USER node
 RUN curl -fsSL https://claude.ai/install.sh | bash
 ENV PATH="/home/node/.local/bin:${PATH}"
 USER root
 
+
 RUN mkdir -p /home/${USERNAME}/.claude \
     && chown -R ${USERNAME}:${USERNAME} /home/${USERNAME}/.claude
+
+# RUN npm install -g @modelcontextprotocol/server-github \
+#                     notebooklm-mcp
+
+# ── GSD framework (Git. Ship. Done.) ──────────────────────────────────
+# @opengsd/gsd-core is an INSTALLER, not a library — it must be executed
+# with npx, and `--claude --global` are flags for that installer (npm
+# install would silently ignore them and never lay down the framework).
+# The installer bakes ABSOLUTE paths (hooks, statusline, 180+ skill
+# references) keyed to CLAUDE_CONFIG_DIR, so it must target the real
+# runtime config dir /home/${USERNAME}/.claude.  Because that path is
+# bind-mounted over at runtime, the baked copy would be shadowed — so we
+# stash the install in /opt/gsd and let entrypoint.sh inject it into the
+# (container-private) named-instance state on startup.
+USER ${USERNAME}
+RUN CLAUDE_CONFIG_DIR=/home/${USERNAME}/.claude \
+        npx -y @opengsd/gsd-core@latest --claude --global \
+    && rm -rf /home/${USERNAME}/.npm
+USER root
+RUN mkdir -p /opt/gsd \
+    && cp -a /home/${USERNAME}/.claude/. /opt/gsd/ \
+    && chmod -R a+rX /opt/gsd \
+    && find /home/${USERNAME}/.claude -mindepth 1 -delete
+
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY git-credential-token /usr/local/bin/git-credential-token

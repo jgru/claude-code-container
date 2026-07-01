@@ -14,6 +14,10 @@ BUILD_DIR="${CLAUDE_DEVCONTAINER_DIR:-${HOME}/.config/claude-devcontainer}"
 INSTANCE=""
 LIST_INSTANCES=false
 PRUNE_INSTANCE=false
+SETTINGS_FILE=""
+MCP_FILE=""
+PRIVILEGED=false
+ROOT=false
 CLAUDE_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -25,6 +29,18 @@ while [ $# -gt 0 ]; do
             LIST_INSTANCES=true; shift ;;
         --prune)
             PRUNE_INSTANCE=true; shift ;;
+        --privileged)
+            PRIVILEGED=true; shift ;;
+        --root)
+            ROOT=true; shift ;;
+        -s|--settings)
+            SETTINGS_FILE="$2"; shift 2 ;;
+        --settings=*)
+            SETTINGS_FILE="${1#--settings=}"; shift ;;
+        --mcp)
+            MCP_FILE="$2"; shift 2 ;;
+        --mcp=*)
+            MCP_FILE="${1#--mcp=}"; shift ;;
         --version|-V)
             echo "claude-docker (claude-code-container wrapper)"; exit 0 ;;
         *)
@@ -225,6 +241,26 @@ if [ -t 0 ]; then
     DOCKER_ARGS+=(-t)
 fi
 
+# ── Privileged mode (opt-in) ──
+# Off by default — this container is a firewalled sandbox.  Enable with the
+# --privileged flag or CLAUDE_PRIVILEGED=1 when you need host-level kernel
+# access (nested Docker, mounts, iptables/NET_ADMIN, ptrace debugging, ...).
+if [ "$PRIVILEGED" = true ] || [ "${CLAUDE_PRIVILEGED:-}" = 1 ]; then
+    DOCKER_ARGS+=(--privileged)
+    echo "[claude] Running in privileged mode" >&2
+fi
+
+# ── Run-as user (opt-in root) ──
+# By default the container runs as your host uid so workspace files stay owned
+# by you.  --root / CLAUDE_ROOT=1 runs Claude as root inside the container
+# (uid 0) — handy for root-native tooling (mount -o loop, losetup, debugfs)
+# under --privileged, at the cost of root-owned files in the workspace.
+RUN_AS_UID="$(id -u)"
+if [ "$ROOT" = true ] || [ "${CLAUDE_ROOT:-}" = 1 ]; then
+    RUN_AS_UID=0
+    echo "[claude] Running as root inside the container" >&2
+fi
+
 # ── IDE integration (Emacs claude-code-ide) ──
 # The IDE starts an MCP server on the host; the container must reach it.
 if [ -n "${CLAUDE_CODE_SSE_PORT:-}" ]; then
@@ -251,8 +287,14 @@ if [ -n "$INSTANCE" ]; then
         if mkdir "$_SEED_LOCK" 2>/dev/null; then
             # Re-check after acquiring lock
             if [ ! -f "${INSTANCE_DIR}/.seeded" ]; then
+                # Copy top-level files (settings, credentials, etc.)
                 for f in "${HOME}/.claude"/*; do
                     [ -f "$f" ] && cp "$f" "${INSTANCE_DIR}/claude/"
+                done
+                # Copy config subdirs (skills, agents, rules, output-styles)
+                # Exclude ephemeral/history dirs: ide, projects, todos, debug, file-history
+                for d in skills agents rules output-styles; do
+                    [ -d "${HOME}/.claude/${d}" ] && cp -r "${HOME}/.claude/${d}" "${INSTANCE_DIR}/claude/"
                 done
                 if [ -f "${HOME}/.claude.json" ]; then
                     cp "${HOME}/.claude.json" "${INSTANCE_DIR}/claude.json"
@@ -284,6 +326,26 @@ else
     )
     # Only mount .claude.json if it exists — Docker creates an empty directory otherwise
     [ -f "${HOME}/.claude.json" ] && VOL_ARGS+=(-v "${HOME}/.claude.json:/home/node/.claude.json")
+fi
+
+# Custom settings override: mount user-provided settings.json into the container
+if [ -n "$SETTINGS_FILE" ]; then
+    SETTINGS_FILE="$(cd "$(dirname "$SETTINGS_FILE")" && pwd)/$(basename "$SETTINGS_FILE")"
+    if [ ! -f "$SETTINGS_FILE" ]; then
+        echo "[claude] Error: settings file '${SETTINGS_FILE}' not found." >&2
+        exit 1
+    fi
+    VOL_ARGS+=(-v "${SETTINGS_FILE}:/etc/claude/settings.json:ro")
+fi
+
+# Custom MCP config: merged into settings.json by the entrypoint
+if [ -n "$MCP_FILE" ]; then
+    MCP_FILE="$(cd "$(dirname "$MCP_FILE")" && pwd)/$(basename "$MCP_FILE")"
+    if [ ! -f "$MCP_FILE" ]; then
+        echo "[claude] Error: MCP config file '${MCP_FILE}' not found." >&2
+        exit 1
+    fi
+    VOL_ARGS+=(-v "${MCP_FILE}:/etc/claude/mcp.json:ro")
 fi
 
 # IDE integration: mount lockfiles so Claude Code discovers the MCP
@@ -319,7 +381,7 @@ fi
 docker run \
     "${DOCKER_ARGS[@]}" \
     --name "${CONTAINER_NAME}" \
-    -e CLAUDE_USER="$(id -u)" \
+    -e CLAUDE_USER="${RUN_AS_UID}" \
     -v "${SECRETS_FILE}:/run/secrets/env:ro" \
     "${VOL_ARGS[@]}" \
     -w "${WORKSPACE}" \

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "skipDangerousModePermissionPrompt": true
+  },
+  "model": "opus",
+  "statusLine": {
+    "type": "command",
+    "command": "input=$(cat); remaining=$(echo \"$input\" | jq -r '.context_window.remaining_percentage // empty'); [ -n \"$remaining\" ] && printf \"Context: %.1f%% remaining\" \"$remaining\" || echo \"No messages yet\""
+  },
+  "effortLevel": "xhigh",
+  "skipDangerousModePermissionPrompt": true
+}
