@@ -6,7 +6,9 @@
   "model": "opus",
   "statusLine": {
     "type": "command",
-    "command": "input=$(cat); remaining=$(echo \"$input\" | jq -r '.context_window.remaining_percentage // empty'); [ -n \"$remaining\" ] && printf \"Context: %.1f%% remaining\" \"$remaining\" || echo \"No messages yet\""
+    "command": "node /etc/claude/statusline.js",
+    "padding": 2,
+    "refreshInterval": 60
   },
   "effortLevel": "xhigh",
   "skipDangerousModePermissionPrompt": true
