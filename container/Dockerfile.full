@@ -64,6 +64,16 @@ RUN mkdir -p /opt/gsd \
     && find /home/${USERNAME}/.claude -mindepth 1 -delete
 
 
+# ── Bundled skills ────────────────────────────────────────────────────
+# Skill directories live in ./skills (git submodules or dropped-in folders,
+# each with a SKILL.md).  Like GSD, they can't be baked straight into
+# /home/${USERNAME}/.claude/skills because that path is bind-mounted over at
+# runtime — so we stash them in /opt/skills and let entrypoint.sh inject each
+# one into the live ~/.claude/skills on startup.  Unlike GSD, skills carry no
+# host-invalid absolute paths, so injection is safe for every instance type.
+COPY skills /opt/skills
+RUN chmod -R a+rX /opt/skills
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY git-credential-token /usr/local/bin/git-credential-token
 COPY settings.json /etc/claude/settings.json

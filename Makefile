@@ -11,8 +11,11 @@ help:
 	@echo "  test     Run the container interactively in the current directory"
 
 install:
+	git submodule update --init --recursive
 	mkdir -p $(CONFIG_DIR) $(BIN_DIR)
-	cp container/Dockerfile.full container/entrypoint.sh container/git-credential-token container/settings.json $(CONFIG_DIR)/
+	cp container/Dockerfile.full container/entrypoint.sh container/git-credential-token container/settings.json container/statusline.js $(CONFIG_DIR)/
+	rm -rf $(CONFIG_DIR)/skills
+	cp -r skills $(CONFIG_DIR)/skills
 	chmod +x $(CONFIG_DIR)/entrypoint.sh $(CONFIG_DIR)/git-credential-token
 	cp bin/claude-docker.sh $(BIN_DIR)/claude-docker
 	chmod +x $(BIN_DIR)/claude-docker

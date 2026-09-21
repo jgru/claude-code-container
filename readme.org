@@ -15,6 +15,8 @@ container/
   Dockerfile              Claude Code based on node 22
   entrypoint.sh           git tokens -> exec claude
   git-credential-token    Credential helper (reads tokens from env)
+skills/
+  <name>/SKILL.md         Skills baked into every container (submodule or dropped-in)
 elisp/
   claude-code-ide-ext.el  Emacs configuration
 .env.example              Template .env for projects
@@ -167,6 +169,42 @@ kyle                 stopped    2026-03-21 09:30     /home/user/project-b
 
 Without =--instance=, the default behaviour is unchanged: =~/.claude= is
 shared and the concurrent-instance warning remains active.
+
+* Skills
+
+Skill directories under =skills/= are baked into the image and injected into
+=~/.claude/skills/= inside every container on startup, so each container ships
+with them available to Claude Code. The bundled default is
+[[https://github.com/blader/humanizer][=blader/humanizer=]].
+
+Add a skill either as a git submodule (tracks upstream) or by dropping a
+folder in — both require a =SKILL.md= at the top of the skill directory:
+
+#+begin_src sh
+# As a submodule (SKILL.md must be at the repo root, as in blader/humanizer)
+git submodule add https://github.com/<owner>/<repo> skills/<name>
+
+# Or drag-and-drop a vendored skill
+mkdir -p skills/<name> && cp /path/to/SKILL.md skills/<name>/
+
+make install    # inits submodules, ships skills/ into the build context
+make build      # rebuild so the new skill is baked in
+#+end_src
+
+Injection is *non-destructive*: a baked skill is copied only when
+=~/.claude/skills/<name>= doesn't already exist, so your own edits (and host
+skills of the same name in a shared =~/.claude=) always win. To refresh an
+injected skill after rebuilding, delete =~/.claude/skills/<name>= (in the
+relevant instance state) and restart. Set =CLAUDE_SKIP_SKILLS=1= to skip
+injection for a run.
+
+Cloning this repo? Pull the skill submodules with:
+#+begin_src sh
+git submodule update --init --recursive
+#+end_src
+
+See [[file:skills/README.md][=skills/README.md=]] for details. Skills are baked
+by =Dockerfile.full= (the image =make build= produces).
 
 * Network
 

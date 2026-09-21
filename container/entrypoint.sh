@@ -197,6 +197,32 @@ fs.writeFileSync(dst, JSON.stringify(s, null, 2) + "\n");
     chown -R "$RUN_UID" /home/node/.claude
 fi
 
+# ── Bundled skills ────────────────────────────────────────────────────
+# Skills baked into the image at /opt/skills (from the repo's ./skills dir)
+# are injected into the live ~/.claude/skills so every container ships with
+# them.  Each subdirectory is one skill (contains SKILL.md); its name becomes
+# the folder under ~/.claude/skills.
+#
+# Non-destructive: a skill is copied only when it isn't already present, so a
+# user's own edits (or a host skill of the same name in a shared ~/.claude)
+# always win.  To refresh an injected skill after an image rebuild, delete
+# ~/.claude/skills/<name> and restart.  Set CLAUDE_SKIP_SKILLS=1 to skip.
+#
+# Safe for every instance type (named private state OR the shared host mount):
+# skills are self-contained markdown/scripts with no host-invalid paths.
+if [ -d /opt/skills ] && [ "${CLAUDE_SKIP_SKILLS:-}" != "1" ]; then
+    for _skill in /opt/skills/*/; do
+        [ -d "$_skill" ] || continue
+        _name="$(basename "$_skill")"
+        _dst="/home/node/.claude/skills/$_name"
+        [ -e "$_dst" ] && continue
+        mkdir -p /home/node/.claude/skills
+        cp -a "$_skill" "$_dst"
+        chown -R "$RUN_UID" "$_dst"
+        echo "[skills] Installed skill '$_name'"
+    done
+fi
+
 # ── Git config ──
 # Write to a temp file — macOS bind mounts may not let us write to $HOME
 GIT_HOME=$(mktemp -d)
