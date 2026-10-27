@@ -4,15 +4,16 @@ Run Claude Code in a container (also driven from Emacs) to provide
 file system isolation and protect your secrets. =git= uses tokens from
 each project's =.env=. Claude uses OAuth tokens retrieved via macOS'
 =keychain= (fallback: read from an unencrypted file with the implied
-security risks).
+security risks), or talks to an LLM gateway (LiteLLM) when one is
+configured — see [[#llm-gateway-litellm][LLM gateway (LiteLLM)]].
 
 * Files
 
 #+begin_example
 bin/
-  claude-docker.sh        Wrapper script -> ~/.local/bin/claude-docker
+  claude-docker.sh        Wrapper script -> ~/.local/bin/claude-docker (+ codex-docker symlink)
 container/
-  Dockerfile              Claude Code based on node 22
+  Dockerfile              Claude Code + OpenAI Codex based on node 22
   entrypoint.sh           git tokens -> exec claude
   git-credential-token    Credential helper (reads tokens from env)
 skills/
@@ -43,9 +44,10 @@ chmod +x ~/.config/claude-devcontainer/entrypoint.sh \
 # 2. Build image
 docker build -t claude-devcontainer ~/.config/claude-devcontainer/
 
-# 3. Install wrapper
+# 3. Install wrapper (codex-docker is the same script under a second name)
 cp bin/claude-docker.sh ~/.local/bin/claude-docker
 chmod +x ~/.local/bin/claude-docker
+ln -sf claude-docker ~/.local/bin/codex-docker
 
 # 4. Test it
 make test
@@ -89,6 +91,87 @@ claude setup-token
 echo "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-...." > ~/.config/claude-devcontainer/env
 chmod 600 ~/.config/claude-devcontainer/env
 #+end_src
+
+With =--env= (next section) the OAuth token is not read at all.
+
+* LLM gateway (LiteLLM)
+:PROPERTIES:
+:CUSTOM_ID: llm-gateway-litellm
+:END:
+
+Use a [[https://docs.litellm.ai/][LiteLLM]] proxy instead of your Anthropic account:
+
+#+begin_src sh
+claude-docker --env my-gateway/gateway.sh
+codex-docker  --env my-gateway/gateway.sh
+#+end_src
+
+The file exports the gateway URL, your key and, if the gateway names models
+differently from Anthropic, the model IDs:
+
+#+begin_src bash
+_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$_dir/key.env" ] && . "$_dir/key.env"          # LITELLM_API_KEY=sk-…
+export LITELLM_API_KEY
+
+export ANTHROPIC_BASE_URL="https://llm-gateway.example.invalid"
+export ANTHROPIC_AUTH_TOKEN="$LITELLM_API_KEY"       # or ANTHROPIC_API_KEY for x-api-key
+
+export ANTHROPIC_DEFAULT_OPUS_MODEL="<gateway id for opus>"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="<gateway id for sonnet>"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="<gateway id for haiku>"
+export ANTHROPIC_DEFAULT_FABLE_MODEL="<gateway id for fable>"
+#+end_src
+
+Keep the key in =key.env= next to it (=chmod 600=, git-ignored). The whole
+directory is visible inside the container, so keep nothing else private in it
+and don't use it as a workspace.
+
+- Without =--env= nothing changes.
+- With =--env= your Anthropic login is not used; git tokens work as usual.
+- Use a named instance (=-i gw=) and run =/logout= in it once, otherwise
+  Claude Code warns about two credentials at every start.
+- =ANTHROPIC_*= and =CLAUDE_CODE_*= settings from your shell are passed on;
+  the file wins where both set the same variable.
+- Emacs: add =--env …= to =claude-code-ide-cli-extra-flags=.
+
+** Codex
+
+=codex-docker= runs [[https://github.com/openai/codex][OpenAI Codex]] with the same flags. For a gateway, add two
+files to the directory:
+
+#+begin_example
+my-gateway/
+  gateway.sh          as above
+  key.env             LITELLM_API_KEY=…
+  codex-setup.sh      runs at every container start
+  codex/config.toml   Codex provider config
+#+end_example
+
+#+begin_src bash
+# codex-setup.sh — runs from my-gateway/, must be safe to repeat
+[ -f "$CODEX_HOME/config.toml" ] || cp codex/config.toml "$CODEX_HOME/config.toml"
+#+end_src
+
+#+begin_src toml
+# codex/config.toml
+model = "<gateway model id>"
+model_provider = "gateway"
+web_search = "disabled"          # not supported through LiteLLM
+
+[model_providers.gateway]
+name = "LiteLLM"
+base_url = "https://llm-gateway.example.invalid/v1"
+env_key = "LITELLM_API_KEY"
+wire_api = "responses"
+#+end_src
+
+=codex-setup.sh= can also generate a model catalog (=model_catalog_json=) so
+=/model= offers reasoning efforts for the gateway's models.
+
+Codex keeps its state in a Docker volume per instance, separate from your
+host =~/.codex=. Reset it with =docker volume rm claude-devcontainer-codex=.
+Without =--env=, use =codex login= inside the container or set =OPENAI_API_KEY=.
 
 * Git remote rewriting
 

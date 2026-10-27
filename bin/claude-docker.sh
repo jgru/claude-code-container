@@ -1,14 +1,21 @@
 #!/bin/bash
-# claude — run Claude Code in a firewalled Docker container.
-# Reads git tokens + settings from the project's .env file.
+# claude — run Claude Code in a Docker container.
+# Isolation is filesystem-only (no network firewall): the container sees the
+# current project directory.  Git tokens + settings come from the project's .env.
 #
 # Install:
 #   cp claude-docker.sh ~/.local/bin/claude-docker && chmod +x ~/.local/bin/claude-docker
+#   ln -s claude-docker ~/.local/bin/codex-docker      # same wrapper, runs Codex
 
 set -eo pipefail
 
 IMAGE="claude-devcontainer"
 BUILD_DIR="${CLAUDE_DEVCONTAINER_DIR:-${HOME}/.config/claude-devcontainer}"
+
+case "$(basename "$0")" in
+    codex-docker*) CLI=codex;  CNAME_PREFIX="codex-" ;;
+    *)             CLI=claude; CNAME_PREFIX="claude-code-" ;;
+esac
 
 # ── Parse wrapper flags (consumed here, not passed to claude) ──
 INSTANCE=""
@@ -18,6 +25,7 @@ SETTINGS_FILE=""
 MCP_FILE=""
 PRIVILEGED=false
 ROOT=false
+GW_ENV_FLAG=""         # --env FILE
 CLAUDE_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -33,6 +41,10 @@ while [ $# -gt 0 ]; do
             PRIVILEGED=true; shift ;;
         --root)
             ROOT=true; shift ;;
+        --env)
+            GW_ENV_FLAG="$2"; shift 2 ;;
+        --env=*)
+            GW_ENV_FLAG="${1#--env=}"; shift ;;
         -s|--settings)
             SETTINGS_FILE="$2"; shift 2 ;;
         --settings=*)
@@ -42,7 +54,7 @@ while [ $# -gt 0 ]; do
         --mcp=*)
             MCP_FILE="${1#--mcp=}"; shift ;;
         --version|-V)
-            echo "claude-docker (claude-code-container wrapper)"; exit 0 ;;
+            echo "$(basename "$0") (claude-code-container wrapper)"; exit 0 ;;
         *)
             CLAUDE_ARGS+=("$1"); shift ;;
     esac
@@ -65,13 +77,14 @@ if [ "$PRUNE_INSTANCE" = true ]; then
         echo "[claude] Instance '${INSTANCE}' not found." >&2
         exit 1
     fi
-    _cname="claude-code-${INSTANCE}"
+    _cname="${CNAME_PREFIX}${INSTANCE}"
     if docker ps -q --filter "name=^${_cname}$" 2>/dev/null | grep -q .; then
         echo "[claude] Instance '${INSTANCE}' is currently running." >&2
         echo "[claude] Stop it first with: docker stop ${_cname}" >&2
         exit 1
     fi
     rm -rf "$_PRUNE_DIR"
+    docker volume rm "claude-devcontainer-codex-${INSTANCE}" >/dev/null 2>&1 || true
     echo "[claude] Pruned instance '${INSTANCE}'." >&2
     exit 0
 fi
@@ -89,7 +102,7 @@ if [ "$LIST_INSTANCES" = true ]; then
         [ -d "$_d" ] || continue
         _name="$(basename "$_d")"
         # Running status
-        _cname="claude-code-${_name}"
+        _cname="${CNAME_PREFIX}${_name}"
         if docker ps -q --filter "name=^${_cname}$" 2>/dev/null | grep -q .; then
             _status="running"
         else
@@ -114,48 +127,12 @@ if [ "$LIST_INSTANCES" = true ]; then
     exit 0
 fi
 
-# ── Build if missing ──
-if ! docker image inspect "$IMAGE" &>/dev/null; then
-    echo "[claude] Building image..." >&2
-    docker build -t "$IMAGE" "$BUILD_DIR"
-fi
-
-# ── OAuth token ──
-# Read from macOS Keychain (where Claude Code stores it)
-# Falls back to env file or existing env var
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-    if command -v security &>/dev/null; then
-        KEYCHAIN_CREDS="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
-        if [ -n "$KEYCHAIN_CREDS" ]; then
-            # Extract accessToken from the JSON blob
-            CLAUDE_CODE_OAUTH_TOKEN="$(echo "$KEYCHAIN_CREDS" | jq -r .claudeAiOauth.accessToken )"
-            # if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-            #     echo "[claude] Token loaded from Keychain" >&2
-            # fi
-        fi
-    fi
-fi
-
-# Fallback: global env file
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-    GLOBAL_ENV="${HOME}/.config/claude-devcontainer/env"
-    if [ -f "$GLOBAL_ENV" ]; then
-        _perms=$(stat -c %a "$GLOBAL_ENV" 2>/dev/null || stat -f %OLp "$GLOBAL_ENV")
-        if [ "$_perms" != "600" ]; then
-            echo "[claude] Error: ${GLOBAL_ENV} has mode ${_perms}, expected 600." >&2
-            echo "[claude] Fix with: chmod 600 ${GLOBAL_ENV}" >&2
-            exit 1
-        fi
-        set -a
-        source "$GLOBAL_ENV"
-        set +a
-    fi
-fi
-
-# ── Read project .env (overrides global) ──
+# ── Paths & helpers ──
 WORKSPACE="${PWD}"
 ENV_FILE="${WORKSPACE}/.env"
+GLOBAL_ENV="${HOME}/.config/claude-devcontainer/env"
 
+# read_env_var KEY — KEY's value from the project .env, unquoted, never evaluated.
 read_env_var() {
     local key="$1"
     if [ -f "$ENV_FILE" ]; then
@@ -168,12 +145,81 @@ read_env_var() {
     fi
 }
 
+ensure_global_env_mode() {
+    local perms
+    perms=$(stat -c %a "$GLOBAL_ENV" 2>/dev/null || stat -f %OLp "$GLOBAL_ENV")
+    if [ "$perms" != "600" ]; then
+        echo "[claude] Error: ${GLOBAL_ENV} has mode ${perms}, expected 600." >&2
+        echo "[claude] Fix with: chmod 600 ${GLOBAL_ENV}" >&2
+        exit 1
+    fi
+}
+
+# ── LLM gateway: --env FILE ──
+# Not read on the host: its directory is mounted at /etc/gateway-bundle and
+# the entrypoint sources it right before the CLI starts.
+GATEWAY_MODE=false
+if [ -n "$GW_ENV_FLAG" ]; then
+    GW_SOURCE="${GW_ENV_FLAG/#\~/$HOME}"
+    [[ "$GW_SOURCE" != /* ]] && GW_SOURCE="${PWD}/${GW_SOURCE}"
+    if [ ! -f "$GW_SOURCE" ]; then
+        echo "[${CLI}] Error: --env file not found: ${GW_SOURCE}" >&2
+        exit 1
+    fi
+    GATEWAY_MODE=true
+    GW_BUNDLE="$(cd "$(dirname "$GW_SOURCE")" && pwd)"
+    echo "[${CLI}] Gateway: ${GW_SOURCE}" >&2
+fi
+
+# ── Build if missing ──
+if ! docker image inspect "$IMAGE" &>/dev/null; then
+    echo "[claude] Building image..." >&2
+    docker build -t "$IMAGE" "$BUILD_DIR"
+fi
+
+# ── OAuth token ──
+if [ "$GATEWAY_MODE" = true ] || [ "$CLI" = codex ]; then
+    # No Keychain; the global env file only for its git tokens.
+    if [ -f "$GLOBAL_ENV" ]; then
+        ensure_global_env_mode
+        set -a
+        # shellcheck source=/dev/null
+        source "$GLOBAL_ENV"
+        set +a
+    fi
+    unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
+else
+    # Read from macOS Keychain (where Claude Code stores it)
+    # Falls back to env file or existing env var
+    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        if command -v security &>/dev/null; then
+            KEYCHAIN_CREDS="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
+            if [ -n "$KEYCHAIN_CREDS" ]; then
+                # Extract accessToken from the JSON blob
+                CLAUDE_CODE_OAUTH_TOKEN="$(echo "$KEYCHAIN_CREDS" | jq -r .claudeAiOauth.accessToken )"
+            fi
+        fi
+    fi
+
+    # Fallback: global env file
+    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -f "$GLOBAL_ENV" ]; then
+        ensure_global_env_mode
+        set -a
+        # shellcheck source=/dev/null
+        source "$GLOBAL_ENV"
+        set +a
+    fi
+fi
+
+# ── Project .env fills in what is still unset ──
 GITHUB_TOKEN="${GITHUB_TOKEN:-$(read_env_var GITHUB_TOKEN)}"
 GITLAB_TOKEN="${GITLAB_TOKEN:-$(read_env_var GITLAB_TOKEN)}"
 GIT_TOKEN="${GIT_TOKEN:-$(read_env_var GIT_TOKEN)}"
 GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-$(read_env_var GIT_AUTHOR_NAME)}"
 GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-$(read_env_var GIT_AUTHOR_EMAIL)}"
-CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-$(read_env_var CLAUDE_CODE_OAUTH_TOKEN)}"
+if [ "$GATEWAY_MODE" = false ] && [ "$CLI" = claude ]; then
+    CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-$(read_env_var CLAUDE_CODE_OAUTH_TOKEN)}"
+fi
 
 # Suppress remote URL rewriting when no git token is configured in .env
 # (tokens from keychain/global env are for auth only — rewrite only when
@@ -186,21 +232,50 @@ if [ -z "${CLAUDE_NO_GIT_REWRITE:-}" ]; then
 fi
 
 # ── Secrets file (mounted, not visible in docker inspect / ps) ──
+# NAME=value per line, value verbatim; the entrypoint parses it, never sources it.
 SECRETS_FILE="$(mktemp)"
 chmod 600 "$SECRETS_FILE"
 trap 'rm -f "$SECRETS_FILE"' EXIT
 
-[ -n "${GITHUB_TOKEN:-}" ]              && printf '%s\n' "GITHUB_TOKEN=${GITHUB_TOKEN}"             >> "$SECRETS_FILE"
-[ -n "${GITLAB_TOKEN:-}" ]              && printf '%s\n' "GITLAB_TOKEN=${GITLAB_TOKEN}"             >> "$SECRETS_FILE"
-[ -n "${GIT_TOKEN:-}" ]                 && printf '%s\n' "GIT_TOKEN=${GIT_TOKEN}"                   >> "$SECRETS_FILE"
-[ -n "${ANTHROPIC_API_KEY:-}" ]         && printf '%s\n' "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"   >> "$SECRETS_FILE"
-[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]   && printf '%s\n' "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}" >> "$SECRETS_FILE"
+write_secret() {
+    local name="$1" value="$2"
+    [ -n "$value" ] || return 0
+    if [[ "$value" == *$'\n'* ]]; then
+        echo "[claude] Error: ${name} contains a newline; refusing to write it to the secrets file." >&2
+        exit 1
+    fi
+    printf '%s=%s\n' "$name" "$value" >> "$SECRETS_FILE"
+}
+
+write_secret GITHUB_TOKEN "${GITHUB_TOKEN:-}"
+write_secret GITLAB_TOKEN "${GITLAB_TOKEN:-}"
+write_secret GIT_TOKEN    "${GIT_TOKEN:-}"
+# Model credential from the host unless the --env file provides it.
+if [ "$GATEWAY_MODE" = false ]; then
+    if [ "$CLI" = codex ]; then
+        write_secret OPENAI_API_KEY "${OPENAI_API_KEY:-}"
+    else
+        write_secret ANTHROPIC_API_KEY       "${ANTHROPIC_API_KEY:-}"
+        write_secret CLAUDE_CODE_OAUTH_TOKEN "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+    fi
+fi
 
 # Non-secret config — safe to pass via -e
 ENV_ARGS=()
 [ -n "${GIT_AUTHOR_NAME:-}" ]           && ENV_ARGS+=(-e "GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME}")
 [ -n "${GIT_AUTHOR_EMAIL:-}" ]          && ENV_ARGS+=(-e "GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL}")
 [ -n "${CLAUDE_NO_GIT_REWRITE:-}" ]     && ENV_ARGS+=(-e "CLAUDE_NO_GIT_REWRITE=${CLAUDE_NO_GIT_REWRITE}")
+
+# Shell knobs (model pins, flags) via -e; never credentials or URLs.
+for _v in $(compgen -A variable | grep -E '^(ANTHROPIC_|CLAUDE_CODE_|OPENAI_|LITELLM_)'); do
+    case "$_v" in
+        ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|\
+        CLAUDE_CODE_SSE_PORT|OPENAI_BASE_URL|OPENAI_API_KEY|LITELLM_API_KEY) continue ;;
+    esac
+    if [ -n "${!_v:-}" ]; then
+        ENV_ARGS+=(-e "${_v}=${!_v}")
+    fi
+done
 
 # ── Auto-prune stale instances ──
 _INSTANCE_MAX_AGE="${CLAUDE_INSTANCE_MAX_AGE:-7}"   # days
@@ -215,6 +290,7 @@ if [ -d "$_INSTANCE_BASE" ]; then
             _iname="$(basename "$_d")"
             [ "$_iname" = "$INSTANCE" ] && continue
             rm -rf "$_d"
+            docker volume rm "claude-devcontainer-codex-${_iname}" >/dev/null 2>&1 || true
             echo "[claude] Pruned stale instance '${_iname}'" >&2
         fi
     done
@@ -223,7 +299,7 @@ fi
 # ── Concurrent-instance guard ──
 # Named instances have isolated state, so only warn for unnamed instances.
 if [ -z "$INSTANCE" ]; then
-    _CONFLICT=$(docker ps --filter "name=claude-code-" --format "{{.ID}} {{.Names}}" 2>/dev/null \
+    _CONFLICT=$(docker ps --filter "name=${CNAME_PREFIX}" --format "{{.ID}} {{.Names}}" 2>/dev/null \
         | while read -r _id _name; do
             docker inspect "$_id" --format '{{range .Mounts}}{{.Source}} {{end}}' 2>/dev/null \
                 | grep -qF "${WORKSPACE}" && echo "$_name"
@@ -242,12 +318,18 @@ if [ -t 0 ]; then
 fi
 
 # ── Privileged mode (opt-in) ──
-# Off by default — this container is a firewalled sandbox.  Enable with the
+# Off by default — this container is a filesystem-isolated sandbox.  Enable with the
 # --privileged flag or CLAUDE_PRIVILEGED=1 when you need host-level kernel
 # access (nested Docker, mounts, iptables/NET_ADMIN, ptrace debugging, ...).
 if [ "$PRIVILEGED" = true ] || [ "${CLAUDE_PRIVILEGED:-}" = 1 ]; then
     DOCKER_ARGS+=(--privileged)
     echo "[claude] Running in privileged mode" >&2
+fi
+
+# ── Extra docker run args, e.g. --add-host=host.docker.internal:host-gateway ──
+if [ -n "${CLAUDE_DOCKER_RUN_ARGS:-}" ]; then
+    read -r -a _extra_args <<< "${CLAUDE_DOCKER_RUN_ARGS}"
+    DOCKER_ARGS+=("${_extra_args[@]}")
 fi
 
 # ── Run-as user (opt-in root) ──
@@ -328,6 +410,21 @@ else
     [ -f "${HOME}/.claude.json" ] && VOL_ARGS+=(-v "${HOME}/.claude.json:/home/node/.claude.json")
 fi
 
+# ── Codex state (codex-docker only) ──
+# ~/.codex (SQLite, app-server socket) hangs on a macOS bind mount, so it is a
+# named volume, one per instance.  The host's ~/.codex is never touched.
+if [ "$CLI" = codex ]; then
+    CODEX_VOLUME="claude-devcontainer-codex${INSTANCE:+-$INSTANCE}"
+    VOL_ARGS+=(-v "${CODEX_VOLUME}:/home/node/.codex")
+    ENV_ARGS+=(-e "CLAUDE_DOCKER_CLI=codex")
+fi
+
+# ── Gateway bundle: the --env file's directory ──
+if [ "$GATEWAY_MODE" = true ]; then
+    VOL_ARGS+=(-v "${GW_BUNDLE}:/etc/gateway-bundle:ro")
+    ENV_ARGS+=(-e "CLAUDE_DOCKER_ENV=/etc/gateway-bundle/$(basename "$GW_SOURCE")")
+fi
+
 # Custom settings override: mount user-provided settings.json into the container
 if [ -n "$SETTINGS_FILE" ]; then
     SETTINGS_FILE="$(cd "$(dirname "$SETTINGS_FILE")" && pwd)/$(basename "$SETTINGS_FILE")"
@@ -369,7 +466,7 @@ if [ -f "${WORKSPACE}/.git" ]; then
     fi
 fi
 
-CONTAINER_NAME="claude-code-${INSTANCE:-$$}"
+CONTAINER_NAME="${CNAME_PREFIX}${INSTANCE:-$$}"
 
 # Named instances use a deterministic container name — check for conflicts
 if [ -n "$INSTANCE" ] && docker ps -q --filter "name=^${CONTAINER_NAME}$" 2>/dev/null | grep -q .; then
@@ -381,7 +478,7 @@ fi
 docker run \
     "${DOCKER_ARGS[@]}" \
     --name "${CONTAINER_NAME}" \
-    -e CLAUDE_USER="${RUN_AS_UID}" \
+    -e "CLAUDE_USER=${RUN_AS_UID}" \
     -v "${SECRETS_FILE}:/run/secrets/env:ro" \
     "${VOL_ARGS[@]}" \
     -w "${WORKSPACE}" \

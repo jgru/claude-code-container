@@ -5,7 +5,7 @@ BIN_DIR    := $(HOME)/.local/bin
 
 help:
 	@echo "Targets:"
-	@echo "  install  Copy files to CONFIG_DIR and BIN_DIR, then run 'make build'"
+	@echo "  install  Copy files to CONFIG_DIR and BIN_DIR (claude-docker + codex-docker link)"
 	@echo "  build    Build the Docker image from CONFIG_DIR"
 	@echo "  rebuild  Build the Docker image without cache"
 	@echo "  test     Run the container interactively in the current directory"
@@ -19,6 +19,7 @@ install:
 	chmod +x $(CONFIG_DIR)/entrypoint.sh $(CONFIG_DIR)/git-credential-token
 	cp bin/claude-docker.sh $(BIN_DIR)/claude-docker
 	chmod +x $(BIN_DIR)/claude-docker
+	ln -sf claude-docker $(BIN_DIR)/codex-docker
 
 build:
 	docker build -t claude-devcontainer -f $(CONFIG_DIR)/Dockerfile.full $(CONFIG_DIR)/

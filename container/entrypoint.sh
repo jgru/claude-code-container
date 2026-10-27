@@ -31,6 +31,7 @@ if [ "$RUN_UID" != "0" ] && [ "$RUN_UID" != "$NODE_UID" ] \
          -path /home/node/.claude      -prune -o \
          -path /home/node/.claude.json -prune -o \
          -path /home/node/.claude-seed -prune -o \
+         -path /home/node/.codex       -prune -o \
          -print0 2>/dev/null \
       | xargs -0r chown -h "$RUN_UID:$RUN_UID" 2>/dev/null || true
 fi
@@ -49,10 +50,36 @@ echo "[entrypoint] Running as uid ${RUN_UID} ($(getent passwd "$RUN_UID" | cut -
 export HOME="/home/node"
 
 # ── Load secrets from mounted file (not passed via env flags) ──
-if [ -f /run/secrets/env ]; then
-    set -a
-    . /run/secrets/env
-    set +a
+# Parsed, not sourced: values may contain shell metacharacters.
+load_secrets_env() {
+    local file="$1" line key value
+    [ -f "$file" ] || return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ -n "$line" ] || continue
+        case "$line" in '#'*) continue ;; esac
+        key="${line%%=*}"
+        value="${line#*=}"
+        if [ "$key" != "$line" ] && [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            export "${key}=${value}"
+        else
+            echo "[entrypoint] Warning: ignoring malformed line in secrets file" >&2
+        fi
+    done < "$file"
+}
+load_secrets_env /run/secrets/env
+
+# ── Which CLI ──
+CLI="${CLAUDE_DOCKER_CLI:-claude}"
+case "$CLI" in
+    claude|codex) ;;
+    *)  echo "[entrypoint] Error: CLAUDE_DOCKER_CLI must be 'claude' or 'codex', got '${CLI}'" >&2
+        exit 1 ;;
+esac
+
+# A fresh named volume is root-owned.
+if [ "$CLI" = codex ]; then
+    mkdir -p /home/node/.codex
+    chown "$RUN_UID" /home/node/.codex
 fi
 
 # ── Seed new named instance state (first use only) ──
@@ -223,6 +250,14 @@ if [ -d /opt/skills ] && [ "${CLAUDE_SKIP_SKILLS:-}" != "1" ]; then
     done
 fi
 
+# ── Gateway bundle: its codex-setup.sh configures Codex (idempotent, warn-only) ──
+run_bundle_setup() {
+    [ -f "$1/codex-setup.sh" ] || return 0
+    (cd "$1" && gosu "$RUN_UID" env CODEX_HOME=/home/node/.codex bash ./codex-setup.sh) \
+        || echo "[codex] Warning: codex-setup.sh failed; continuing with the existing configuration" >&2
+}
+if [ "$CLI" = codex ]; then run_bundle_setup /etc/gateway-bundle; fi
+
 # ── Git config ──
 # Write to a temp file — macOS bind mounts may not let us write to $HOME
 GIT_HOME=$(mktemp -d)
@@ -243,6 +278,7 @@ if [ -n "${GITHUB_TOKEN:-}" ]; then
     echo "[git] GitHub token configured"
 fi
 if [ -n "${GITLAB_TOKEN:-}" ]; then
+    # shellcheck disable=SC2043
     for host in "gitlab.com"; do
         run_as git config --global url."https://${host}/".insteadOf "git@${host}:"
         run_as git config --global url."https://${host}/".insteadOf "ssh://git@${host}/"
@@ -303,6 +339,7 @@ if [ -d "${PWD}/.git" ] && [ "${CLAUDE_NO_GIT_REWRITE:-}" != "1" ]; then
     flock -u 9
 fi
 
+# shellcheck disable=SC2317
 cleanup() {
     [ -z "$_REWRITE_DIR" ] && return
     _LOCK="${_REWRITE_DIR}/lock"
@@ -350,12 +387,18 @@ if [ -n "${CLAUDE_CODE_SSE_PORT:-}" ] && [ -n "${ENABLE_IDE_INTEGRATION:-}" ]; t
     fi
 fi
 
-# ── Run claude, then clean up ─────────────────────────────────────────
-# Cannot use exec — the EXIT trap must fire to restore remotes.
+# ── Run the CLI, then clean up ────────────────────────────────────────
+# No exec: the EXIT trap must restore remotes.  <&0 re-attaches the terminal
+# to the background job (Codex needs a tty on stdin).  The --env file, if
+# any, is sourced as the run user right before the CLI.
+start_cli() {
+    gosu "$RUN_UID" bash -c '[ -z "$1" ] || { set -a; . "$1"; set +a; }; shift; exec "$@"' \
+        bash "${CLAUDE_DOCKER_ENV:-}" "$CLI" "$@"
+}
 trap cleanup EXIT
 trap 'kill -TERM $PID 2>/dev/null' TERM INT
 
-gosu "$RUN_UID" claude "$@" &
+start_cli "$@" <&0 &
 PID=$!
 wait "$PID" 2>/dev/null
 exit $?

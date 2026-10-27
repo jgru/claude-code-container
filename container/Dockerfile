@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gosu \
     socat \
+    procps \
+    python3 \
     sudo \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -25,6 +27,9 @@ RUN printf '%s\n' 'node ALL=(ALL) NOPASSWD:ALL' 'claude ALL=(ALL) NOPASSWD:ALL' 
     && chmod 0440 /etc/sudoers.d/claude-agent
 
 RUN npm install -g @modelcontextprotocol/server-github
+
+# OpenAI Codex (codex-docker)
+RUN npm install -g @openai/codex
 
 USER node
 RUN curl -fsSL https://claude.ai/install.sh | bash

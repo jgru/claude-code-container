@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gosu \
     socat \
+    procps \
     texlive-full \
     poppler-utils \
     python3-pip \
@@ -30,6 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN printf '%s\n' 'node ALL=(ALL) NOPASSWD:ALL' 'claude ALL=(ALL) NOPASSWD:ALL' \
         > /etc/sudoers.d/claude-agent \
     && chmod 0440 /etc/sudoers.d/claude-agent
+
+# OpenAI Codex (codex-docker)
+RUN npm install -g @openai/codex
 
 USER node
 RUN curl -fsSL https://claude.ai/install.sh | bash
