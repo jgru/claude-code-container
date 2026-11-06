@@ -43,8 +43,10 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY git-credential-token /usr/local/bin/git-credential-token
 COPY settings.json /etc/claude/settings.json
 COPY statusline.js /etc/claude/statusline.js
-RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh /usr/local/bin/git-credential-token \
-    && chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/git-credential-token
+COPY herdr-relay.json /etc/claude/herdr-relay.json
+COPY herdr-session-hook /usr/local/bin/herdr-session-hook
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh /usr/local/bin/git-credential-token /usr/local/bin/herdr-session-hook \
+    && chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/git-credential-token /usr/local/bin/herdr-session-hook
 
 ENV DEVCONTAINER=true
 ENV NODE_OPTIONS="--max-old-space-size=4096"

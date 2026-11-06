@@ -235,7 +235,14 @@ fi
 # NAME=value per line, value verbatim; the entrypoint parses it, never sources it.
 SECRETS_FILE="$(mktemp)"
 chmod 600 "$SECRETS_FILE"
-trap 'rm -f "$SECRETS_FILE"' EXIT
+HERDR_WATCH_PID=""
+HERDR_RELAY_HOST_DIR=""
+cleanup() {
+    rm -f "$SECRETS_FILE"
+    [ -z "$HERDR_WATCH_PID" ] || kill "$HERDR_WATCH_PID" 2>/dev/null || true
+    [ -z "$HERDR_RELAY_HOST_DIR" ] || rm -rf "$HERDR_RELAY_HOST_DIR"
+}
+trap cleanup EXIT
 
 write_secret() {
     local name="$1" value="$2"
@@ -465,6 +472,63 @@ if [ -f "${WORKSPACE}/.git" ]; then
         VOL_ARGS+=(-v "${MAIN_GIT}:${MAIN_GIT}")
     fi
 fi
+
+# ── Herdr (https://herdr.dev) ──
+# Inside a Herdr pane, mark the docker process as the agent so Herdr tracks its
+# state (Herdr does not recognise the name `claude-docker`).  For Claude, also
+# relay the session id out of the container so Herdr can reopen it after a
+# server restart: a SessionStart hook in the container writes the id into a
+# host directory, and a watcher here reports `claude-docker ... --resume <id>`
+# as the pane's resume command.  The Herdr socket never enters the container.
+RUN_PREFIX=()
+if [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_PANE_ID:-}" ]; then
+    RUN_PREFIX=(env "HERDR_AGENT=${CLI}")
+    # Herdr types the command into a fresh shell, so it must resolve on PATH.
+    if [ "$CLI" = claude ] && command -v herdr >/dev/null 2>&1 \
+            && command -v "$(basename "$0")" >/dev/null 2>&1; then
+        HERDR_RESUME_ARGV=("$(basename "$0")")
+        [ -n "$INSTANCE" ]       && HERDR_RESUME_ARGV+=(-i "$INSTANCE")
+        { [ "$PRIVILEGED" = true ] || [ "${CLAUDE_PRIVILEGED:-}" = 1 ]; } && HERDR_RESUME_ARGV+=(--privileged)
+        { [ "$ROOT" = true ] || [ "${CLAUDE_ROOT:-}" = 1 ]; } && HERDR_RESUME_ARGV+=(--root)
+        [ "$GATEWAY_MODE" = true ] && HERDR_RESUME_ARGV+=(--env "$GW_SOURCE")
+        [ -n "$SETTINGS_FILE" ]  && HERDR_RESUME_ARGV+=(--settings "$SETTINGS_FILE")
+        [ -n "$MCP_FILE" ]       && HERDR_RESUME_ARGV+=(--mcp "$MCP_FILE")
+
+        HERDR_RELAY_HOST_DIR="$(mktemp -d)"
+        VOL_ARGS+=(-v "${HERDR_RELAY_HOST_DIR}:/run/herdr-relay")
+        ENV_ARGS+=(-e "HERDR_RELAY_DIR=/run/herdr-relay")
+
+        herdr_relay_watch() {
+            local file="${HERDR_RELAY_HOST_DIR}/session" last="" id="" tries=0 next
+            # kill -0: don't outlive a wrapper that died without running cleanup.
+            while sleep 1 && kill -0 "$$" 2>/dev/null; do
+                # The container writes this file, so nothing in it is trusted.
+                # A symlink would read a host file, and an id like --privileged
+                # would become a wrapper flag when Herdr replays the command.
+                [ -f "$file" ] && [ ! -L "$file" ] || continue
+                next="$(head -c 256 "$file" 2>/dev/null)" || continue
+                [[ "$next" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$ ]] || continue
+                [ "$next" != "$last" ] || continue
+                [ "$next" = "$id" ] || { id="$next"; tries=0; }
+                # Herdr accepts the command only once it has detected the agent
+                # in this pane; retry for a while, then give up on this id.
+                [ "$tries" -lt 30 ] || continue
+                tries=$((tries + 1))
+                if herdr pane report-agent-session "$HERDR_PANE_ID" \
+                        --source custom:claude-docker --agent claude \
+                        -- "${HERDR_RESUME_ARGV[@]}" --resume "$id" >/dev/null 2>&1; then
+                    last="$id"
+                fi
+            done
+        }
+        herdr_relay_watch &
+        HERDR_WATCH_PID=$!
+        disown "$HERDR_WATCH_PID"   # no "Terminated" job notice when cleanup kills it
+    fi
+fi
+
+# Host hooks can name host paths; the entrypoint stubs Herdr's (see there).
+ENV_ARGS+=(-e "CLAUDE_HOST_HOME=${HOME}")
 
 CONTAINER_NAME="${CNAME_PREFIX}${INSTANCE:-$$}"
 

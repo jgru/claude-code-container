@@ -48,6 +48,8 @@ fi
 echo "[entrypoint] Running as uid ${RUN_UID} ($(getent passwd "$RUN_UID" | cut -d: -f1 2>/dev/null || echo '?'))" >&2
 
 export HOME="/home/node"
+# gosu resets HOME from passwd, which for root is /root: not where state is mounted.
+run_as() { gosu "$RUN_UID" env "HOME=$HOME" "$@"; }
 
 # ── Load secrets from mounted file (not passed via env flags) ──
 # Parsed, not sourced: values may contain shell metacharacters.
@@ -257,6 +259,17 @@ run_bundle_setup() {
         || echo "[codex] Warning: codex-setup.sh failed; continuing with the existing configuration" >&2
 }
 if [ "$CLI" = codex ]; then run_bundle_setup /etc/gateway-bundle; fi
+
+# ── Herdr's host integration ──
+# `herdr integration install claude` puts a hook in the host's settings.json by
+# absolute host path.  Settings reach this container (shared mount or instance
+# seed) but that path does not, so Claude would print a hook error on every
+# start.  Nothing here can reach Herdr anyway, so a no-op takes its place.  If
+# the path's .claude exists the workspace exposes the host's: never write there.
+if [ -n "${CLAUDE_HOST_HOME:-}" ] && [ ! -e "${CLAUDE_HOST_HOME}/.claude" ]; then
+    mkdir -p "${CLAUDE_HOST_HOME}/.claude/hooks"
+    printf '#!/bin/sh\nexec cat >/dev/null\n' > "${CLAUDE_HOST_HOME}/.claude/hooks/herdr-agent-state.sh"
+fi
 
 # ── Git config ──
 # Write to a temp file — macOS bind mounts may not let us write to $HOME

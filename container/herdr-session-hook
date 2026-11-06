@@ -1,0 +1,26 @@
+#!/bin/sh
+# Claude Code SessionStart hook: hand the current session id to claude-docker
+# on the host (via the bind-mounted $HERDR_RELAY_DIR), which reports
+# `claude-docker ... --resume <id>` to Herdr as the pane's resume command.
+# Prints nothing: SessionStart stdout would be added to Claude's context.
+# Always exits 0 so a failure never shows up as a hook error.
+
+if [ -z "${HERDR_RELAY_DIR:-}" ] || [ ! -d "$HERDR_RELAY_DIR" ]; then
+    cat >/dev/null
+    exit 0
+fi
+
+node -e '
+const fs = require("fs");
+let input;
+try { input = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(0); }
+if (input.agent_id) process.exit(0);
+const id = input.session_id;
+if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) process.exit(0);
+const dir = process.env.HERDR_RELAY_DIR;
+const tmp = `${dir}/.session.${process.pid}`;
+fs.writeFileSync(tmp, id + "\n");
+fs.renameSync(tmp, `${dir}/session`);
+' >/dev/null 2>&1
+
+exit 0

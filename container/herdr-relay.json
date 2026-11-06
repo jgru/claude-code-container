@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/herdr-session-hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

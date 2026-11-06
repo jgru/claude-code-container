@@ -16,6 +16,8 @@ container/
   Dockerfile              Claude Code + OpenAI Codex based on node 22
   entrypoint.sh           git tokens -> exec claude
   git-credential-token    Credential helper (reads tokens from env)
+  herdr-relay.json        SessionStart hook, added inside Herdr panes
+  herdr-session-hook      Hands the session id to the wrapper on the host
 skills/
   <name>/SKILL.md         Skills baked into every container (submodule or dropped-in)
 elisp/
@@ -288,6 +290,33 @@ git submodule update --init --recursive
 
 See [[file:skills/README.md][=skills/README.md=]] for details. Skills are baked
 by =Dockerfile.full= (the image =make build= produces).
+
+* Herdr
+
+=claude-docker= and =codex-docker= work inside [[https://herdr.dev][Herdr]] panes with no configuration.
+After pulling this, run =make install build=: the hook ships in the image.
+
+- *Agent state:* the wrapper sets =HERDR_AGENT= on the =docker= process, so Herdr
+  shows working, idle and blocked for the pane from what is on screen.
+- *Session restore (Claude only):* a =SessionStart= hook in the container writes
+  the session id to a temporary host directory, and the wrapper reports
+  =claude-docker ... --resume <id>= to Herdr. After a Herdr server restart, Herdr
+  types that command into the restored pane's shell.
+
+The restore command keeps =-i=, =--privileged=, =--root=, =--env=, =--settings=
+and =--mcp=. Other arguments you started Claude with are not replayed, and
+=CLAUDE_DOCKER_RUN_ARGS= and similar variables come from the restored shell.
+=claude-docker= and =herdr= must both be on the shell's =PATH=; without them the
+pane still gets agent state, just no restore.
+
+The Herdr socket never enters the container. The session id file is written by
+the container, so the wrapper validates it on the host before reporting it.
+
+=herdr integration install claude= is optional here. It is for Claude running on
+the host; the container gets a no-op in place of its hook.
+
+A session with no messages has nothing to resume, so its pane comes back with
+=No conversation found= and a normal shell prompt.
 
 * Network
 
