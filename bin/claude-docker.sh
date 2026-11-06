@@ -189,25 +189,40 @@ if [ "$GATEWAY_MODE" = true ] || [ "$CLI" = codex ]; then
     fi
     unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
 else
-    # Read from macOS Keychain (where Claude Code stores it)
-    # Falls back to env file or existing env var
-    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-        if command -v security &>/dev/null; then
-            KEYCHAIN_CREDS="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
-            if [ -n "$KEYCHAIN_CREDS" ]; then
-                # Extract accessToken from the JSON blob
-                CLAUDE_CODE_OAUTH_TOKEN="$(echo "$KEYCHAIN_CREDS" | jq -r .claudeAiOauth.accessToken )"
-            fi
-        fi
+    # First hit wins:
+    #   1. CLAUDE_CODE_OAUTH_TOKEN already set in the environment
+    #   2. Keychain item "$KEYCHAIN_TOKEN_SERVICE": long-lived token from
+    #      `claude setup-token` (valid ~1 year, nothing to refresh)
+    #   3. Global env file (CLAUDE_CODE_OAUTH_TOKEN=...)
+    #   4. Claude Code's own login ('Claude Code-credentials'): only the
+    #      ~8h access token; the container cannot refresh it, so the
+    #      container loses auth when it expires.
+    KEYCHAIN_TOKEN_SERVICE="claude-devcontainer-oauth"
+    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && command -v security &>/dev/null; then
+        CLAUDE_CODE_OAUTH_TOKEN="$(security find-generic-password -s "$KEYCHAIN_TOKEN_SERVICE" -w 2>/dev/null || true)"
     fi
 
-    # Fallback: global env file
     if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -f "$GLOBAL_ENV" ]; then
         ensure_global_env_mode
         set -a
         # shellcheck source=/dev/null
         source "$GLOBAL_ENV"
         set +a
+    fi
+
+    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && command -v security &>/dev/null; then
+        KEYCHAIN_CREDS="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
+        if [ -n "$KEYCHAIN_CREDS" ]; then
+            CLAUDE_CODE_OAUTH_TOKEN="$(jq -r '.claudeAiOauth.accessToken // empty' <<<"$KEYCHAIN_CREDS")"
+            _exp_s="$(jq -r '(.claudeAiOauth.expiresAt // 0) / 1000 | floor' <<<"$KEYCHAIN_CREDS")"
+            if [ "$_exp_s" -le "$(date +%s)" ]; then
+                echo "[claude] Warning: the host login token has expired; start 'claude' on the host once to refresh it." >&2
+            else
+                echo "[claude] Warning: using the short-lived host login token (expires $(date -r "$_exp_s" +%H:%M))." >&2
+            fi
+            echo "[claude]   For a 1-year token: claude setup-token, then" >&2
+            echo "[claude]   security add-generic-password -U -a \"\$USER\" -s ${KEYCHAIN_TOKEN_SERVICE} -w" >&2
+        fi
     fi
 fi
 
@@ -343,11 +358,16 @@ fi
 # By default the container runs as your host uid so workspace files stay owned
 # by you.  --root / CLAUDE_ROOT=1 runs Claude as root inside the container
 # (uid 0) — handy for root-native tooling (mount -o loop, losetup, debugfs)
-# under --privileged, at the cost of root-owned files in the workspace.
+# under --privileged, at the cost of root-owned files in the workspace.  Claude
+# refuses bypassPermissions as root, so these runs ask for permission.
 RUN_AS_UID="$(id -u)"
 if [ "$ROOT" = true ] || [ "${CLAUDE_ROOT:-}" = 1 ]; then
     RUN_AS_UID=0
     echo "[claude] Running as root inside the container" >&2
+    # Claude writes to the mounted ~/.claude as root.  On a Linux host those files
+    # would stay root-owned, so the entrypoint hands them back on exit.  Docker
+    # Desktop's bind mounts already map ownership to you.
+    [ "$(uname -s)" != Linux ] || ENV_ARGS+=(-e "CLAUDE_HOST_OWNER=$(id -u):$(id -g)")
 fi
 
 # ── IDE integration (Emacs claude-code-ide) ──
@@ -539,7 +559,7 @@ if [ -n "$INSTANCE" ] && docker ps -q --filter "name=^${CONTAINER_NAME}$" 2>/dev
     exit 1
 fi
 
-docker run \
+"${RUN_PREFIX[@]}" docker run \
     "${DOCKER_ARGS[@]}" \
     --name "${CONTAINER_NAME}" \
     -e "CLAUDE_USER=${RUN_AS_UID}" \

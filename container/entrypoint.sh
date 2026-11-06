@@ -255,7 +255,7 @@ fi
 # ── Gateway bundle: its codex-setup.sh configures Codex (idempotent, warn-only) ──
 run_bundle_setup() {
     [ -f "$1/codex-setup.sh" ] || return 0
-    (cd "$1" && gosu "$RUN_UID" env CODEX_HOME=/home/node/.codex bash ./codex-setup.sh) \
+    (cd "$1" && run_as env CODEX_HOME=/home/node/.codex bash ./codex-setup.sh) \
         || echo "[codex] Warning: codex-setup.sh failed; continuing with the existing configuration" >&2
 }
 if [ "$CLI" = codex ]; then run_bundle_setup /etc/gateway-bundle; fi
@@ -276,8 +276,6 @@ fi
 GIT_HOME=$(mktemp -d)
 chown "$RUN_UID" "$GIT_HOME"
 export GIT_CONFIG_GLOBAL="$GIT_HOME/.gitconfig"
-
-run_as() { gosu "$RUN_UID" "$@"; }
 
 run_as git config --global credential.helper token
 run_as git config --global user.name  "${GIT_AUTHOR_NAME:-Claude Code}"
@@ -354,6 +352,12 @@ fi
 
 # shellcheck disable=SC2317
 cleanup() {
+    # --root on a Linux host: hand ~/.claude files back so the host user can
+    # still read them (the wrapper sets this; see its run-as section).
+    if [ -n "${CLAUDE_HOST_OWNER:-}" ]; then
+        find /home/node/.claude /home/node/.claude.json -xdev -uid 0 \
+             -exec chown -h "$CLAUDE_HOST_OWNER" {} + 2>/dev/null || true
+    fi
     [ -z "$_REWRITE_DIR" ] && return
     _LOCK="${_REWRITE_DIR}/lock"
     _COUNT_FILE="${_REWRITE_DIR}/count"
@@ -394,7 +398,7 @@ cleanup() {
 if [ -n "${CLAUDE_CODE_SSE_PORT:-}" ] && [ -n "${ENABLE_IDE_INTEGRATION:-}" ]; then
     _HOST_IP=$(getent hosts host.docker.internal 2>/dev/null | awk '{print $1}')
     if [ -n "$_HOST_IP" ]; then
-        gosu "$RUN_UID" \
+        run_as \
           socat TCP-LISTEN:"${CLAUDE_CODE_SSE_PORT}",bind=127.0.0.1,reuseaddr,fork \
                 TCP:"${_HOST_IP}":"${CLAUDE_CODE_SSE_PORT}" 2>/dev/null &
     fi
@@ -405,13 +409,28 @@ fi
 # to the background job (Codex needs a tty on stdin).  The --env file, if
 # any, is sourced as the run user right before the CLI.
 start_cli() {
-    gosu "$RUN_UID" bash -c '[ -z "$1" ] || { set -a; . "$1"; set +a; }; shift; exec "$@"' \
+    run_as bash -c '[ -z "$1" ] || { set -a; . "$1"; set +a; }; shift; exec "$@"' \
         bash "${CLAUDE_DOCKER_ENV:-}" "$CLI" "$@"
 }
 trap cleanup EXIT
 trap 'kill -TERM $PID 2>/dev/null' TERM INT
 
-start_cli "$@" <&0 &
+CLI_ARGS=("$@")
+
+# Claude refuses to start as root in bypassPermissions, which the settings here
+# default to.  Root runs keep permission prompts instead of disabling that check.
+if [ "$CLI" = claude ] && [ "$RUN_UID" = 0 ]; then
+    CLI_ARGS=(--permission-mode default "${CLI_ARGS[@]}")
+fi
+
+# ── Herdr session relay (set by claude-docker inside a Herdr pane) ──
+# Adds a SessionStart hook that writes the session id to $HERDR_RELAY_DIR.
+# Hooks from --settings are added to the user's hooks, not replacing them.
+if [ "$CLI" = claude ] && [ -n "${HERDR_RELAY_DIR:-}" ] && [ -f /etc/claude/herdr-relay.json ]; then
+    CLI_ARGS=(--settings /etc/claude/herdr-relay.json "${CLI_ARGS[@]}")
+fi
+
+start_cli "${CLI_ARGS[@]}" <&0 &
 PID=$!
 wait "$PID" 2>/dev/null
 exit $?

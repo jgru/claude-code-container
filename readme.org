@@ -79,15 +79,29 @@ GITHUB_TOKEN=
 
 * OAuth
 
-The OAuth token is read from Keychain via:
+Recommended: create a long-lived (1 year) token once and store it in Keychain.
 #+begin_src sh
-security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null
+claude setup-token        # browser login, prints sk-ant-oat01-...
+security add-generic-password -U -a "$USER" -s claude-devcontainer-oauth -w
 #+end_src
+With =-w= last, =security= prompts for the token, so it stays out of your
+shell history. Repeat these two steps when the token expires (about a year).
 
-Fallback: =~/.config/claude-devcontainer/env=. Since credentials are stored in
-clear in that file, the Keychain approach is strongly preferred.
+The launcher takes the first token it finds:
+1. =CLAUDE_CODE_OAUTH_TOKEN= already set in the environment
+2. Keychain item =claude-devcontainer-oauth= (the token above)
+3. =~/.config/claude-devcontainer/env= (=CLAUDE_CODE_OAUTH_TOKEN=...=)
+4. Claude Code's own login (Keychain item =Claude Code-credentials=)
 
-*Less secure variant:* If you cannot use Keychain:
+Option 4 is only a fallback. That login holds an access token that expires
+after about 8 hours. The refresh token stays on the host, because refresh
+tokens rotate and a container refreshing would log out the host and the other
+containers. When the access token expires, the containers lose auth until you
+refresh on the host and restart them. The launcher prints a warning with the
+expiry time when it uses this option.
+
+*Less secure variant:* If you cannot use Keychain, put the token in the env
+file instead (it is stored in clear text there):
 #+begin_src bash
 claude setup-token
 echo "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-...." > ~/.config/claude-devcontainer/env
