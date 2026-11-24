@@ -245,7 +245,10 @@ if [ -d /opt/skills ] && [ "${CLAUDE_SKIP_SKILLS:-}" != "1" ]; then
         _name="$(basename "$_skill")"
         _dst="/home/node/.claude/skills/$_name"
         [ -e "$_dst" ] && continue
-        mkdir -p /home/node/.claude/skills
+        # Create as the run user, not root: on the shared mount this is the
+        # host's ~/.claude/skills, which the user must be able to edit.
+        [ -d /home/node/.claude/skills ] \
+            || install -d -o "$RUN_UID" -m 755 /home/node/.claude/skills
         cp -a "$_skill" "$_dst"
         chown -R "$RUN_UID" "$_dst"
         echo "[skills] Installed skill '$_name'"

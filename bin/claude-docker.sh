@@ -428,9 +428,10 @@ if [ -n "$INSTANCE" ]; then
         -v "${WORKSPACE}:${WORKSPACE}"
     )
 else
-    # Default: shared state.  Create ~/.claude ourselves so it's owned by the
-    # caller; otherwise the Docker daemon creates the missing mount source as root.
-    mkdir -p "${HOME}/.claude"
+    # Default: shared state.  Create ~/.claude (and skills/, which the
+    # entrypoint fills) ourselves so they're owned by the caller; otherwise the
+    # Docker daemon / root entrypoint creates them as root.
+    mkdir -p "${HOME}/.claude/skills"
     VOL_ARGS=(
         -v "${HOME}/.claude:/home/node/.claude"
         -v "${WORKSPACE}:${WORKSPACE}"
