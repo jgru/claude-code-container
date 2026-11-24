@@ -252,6 +252,16 @@ if [ -d /opt/skills ] && [ "${CLAUDE_SKIP_SKILLS:-}" != "1" ]; then
     done
 fi
 
+# ── Hand a root-owned top level back to the user ──
+# A ~/.claude the Docker daemon created as the mount source, or a skills/ dir
+# created by the mkdir above, is owned by root.  Fix only those two
+# directories, not their contents, so host files are never re-owned recursively.
+if [ "$RUN_UID" != 0 ]; then
+    [ "$(stat -c %u /home/node/.claude)" = 0 ] && chown "$RUN_UID" /home/node/.claude
+    [ -d /home/node/.claude/skills ] && [ "$(stat -c %u /home/node/.claude/skills)" = 0 ] \
+        && chown "$RUN_UID" /home/node/.claude/skills
+fi
+
 # ── Gateway bundle: its codex-setup.sh configures Codex (idempotent, warn-only) ──
 run_bundle_setup() {
     [ -f "$1/codex-setup.sh" ] || return 0
