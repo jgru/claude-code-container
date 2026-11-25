@@ -517,6 +517,24 @@ if [ "$CLI" = claude ] && [ "$RUN_UID" = 0 ]; then
     CLI_ARGS=(--permission-mode default "${CLI_ARGS[@]}")
 fi
 
+# Codex's Linux sandbox needs a user namespace, which Docker's default seccomp
+# profile forbids, so every sandboxed command fails.  The container is the
+# sandbox here (as with Claude's bypassPermissions), so turn Codex's off;
+# approval prompts are unaffected.  `-c` is a root-level override that also
+# reaches subcommands like `exec`.  An explicit sandbox flag on the command
+# line wins: then nothing is added.
+if [ "$CLI" = codex ]; then
+    _codex_sandbox_set=false
+    for _a in "${CLI_ARGS[@]}"; do
+        case "$_a" in
+            -s|--sandbox|--sandbox=*|--full-auto|--dangerously-bypass-approvals-and-sandbox|--yolo|sandbox_mode=*)
+                _codex_sandbox_set=true ;;
+        esac
+    done
+    [ "$_codex_sandbox_set" = true ] \
+        || CLI_ARGS=(-c 'sandbox_mode="danger-full-access"' "${CLI_ARGS[@]}")
+fi
+
 # ── Herdr session relay (set by claude-docker inside a Herdr pane) ──
 # Adds a SessionStart hook that writes the session id to $HERDR_RELAY_DIR.
 # Hooks from --settings are added to the user's hooks, not replacing them.
