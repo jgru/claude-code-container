@@ -57,15 +57,25 @@ RUN mkdir -p /home/${USERNAME}/.claude \
 # bind-mounted over at runtime, the baked copy would be shadowed — so we
 # stash the install in /opt/gsd and let entrypoint.sh inject it into the
 # (container-private) named-instance state on startup.
+#
+# Codex gets its own GSD install (--codex: paths rewritten to ~/.codex, hooks
+# in hooks.json, [agents]/[features] in config.toml).  ~/.codex is a Docker
+# volume at runtime, so it is stashed the same way in /opt/gsd-codex.  Both
+# installs run in one layer so they come from the same package version.
 USER ${USERNAME}
 RUN CLAUDE_CONFIG_DIR=/home/${USERNAME}/.claude \
         npx -y @opengsd/gsd-core@latest --claude --global \
+    && CODEX_HOME=/home/${USERNAME}/.codex \
+        npx -y @opengsd/gsd-core@latest --codex --global \
     && rm -rf /home/${USERNAME}/.npm
 USER root
-RUN mkdir -p /opt/gsd \
+RUN mkdir -p /opt/gsd /opt/gsd-codex \
     && cp -a /home/${USERNAME}/.claude/. /opt/gsd/ \
-    && chmod -R a+rX /opt/gsd \
-    && find /home/${USERNAME}/.claude -mindepth 1 -delete
+    && cp -a /home/${USERNAME}/.codex/. /opt/gsd-codex/ \
+    && test -d /opt/gsd-codex/gsd-core \
+    && chmod -R a+rX /opt/gsd /opt/gsd-codex \
+    && find /home/${USERNAME}/.claude -mindepth 1 -delete \
+    && rm -rf /home/${USERNAME}/.codex
 
 
 # ── Bundled skills ────────────────────────────────────────────────────
@@ -82,8 +92,10 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY git-credential-token /usr/local/bin/git-credential-token
 COPY settings.json /etc/claude/settings.json
 COPY statusline.js /etc/claude/statusline.js
-RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh /usr/local/bin/git-credential-token \
-    && chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/git-credential-token
+COPY herdr-relay.json /etc/claude/herdr-relay.json
+COPY herdr-session-hook /usr/local/bin/herdr-session-hook
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh /usr/local/bin/git-credential-token /usr/local/bin/herdr-session-hook \
+    && chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/git-credential-token /usr/local/bin/herdr-session-hook
 
 ENV DEVCONTAINER=true
 ENV NODE_OPTIONS="--max-old-space-size=4096"

@@ -265,6 +265,87 @@ if [ "$RUN_UID" != 0 ]; then
         && chown "$RUN_UID" /home/node/.claude/skills
 fi
 
+# ── GSD framework for Codex (Dockerfile.full only) ──────────────────
+# The image stashes a `--codex` GSD install in /opt/gsd-codex; copy it into
+# ~/.codex once (keyed on gsd-core/).  ~/.codex is a container-private Docker
+# volume, never the host's, so unlike the Claude side this is safe for every
+# instance type.  An existing volume keeps its own files: config.toml gets
+# GSD's keys/tables merged in, hooks.json gets GSD's hooks appended, and any
+# other file that already exists is left alone.
+inject_gsd_codex() {
+    local src="$1" dst="$2" item base
+    mkdir -p "$dst"
+    for item in "$src"/* "$src"/.[!.]*; do
+        [ -e "$item" ] || continue
+        base="$(basename "$item")"
+        if [ -d "$item" ]; then
+            mkdir -p "$dst/$base"
+            cp -a "$item/." "$dst/$base/"
+        elif [ ! -e "$dst/$base" ]; then
+            cp -a "$item" "$dst/$base"
+        elif [ "$base" = config.toml ]; then
+            node -e '
+const fs = require("fs");
+const [dstPath, srcPath] = process.argv.slice(1);
+// Line-level TOML merge: enough for GSD, which only adds scalar keys.
+const HDR = /^\[(\[?)\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/;
+const KEY = /^\s*([A-Za-z0-9_.\-"\x27]+?)\s*=/;
+const parse = (text) => {
+    const secs = [{ name: null, arr: false, lines: [] }];
+    for (const l of text.replace(/\n+$/, "").split("\n")) {
+        const m = l.match(HDR);
+        if (m) secs.push({ name: m[2].replace(/\s+/g, ""), arr: m[1] === "[", lines: [l] });
+        else secs[secs.length - 1].lines.push(l);
+    }
+    return secs;
+};
+const keyOf = (l) => (l.match(KEY) || [])[1];
+const dst = parse(fs.readFileSync(dstPath, "utf8"));
+const src = parse(fs.readFileSync(srcPath, "utf8"));
+let carry = [];   // comments (e.g. GSD markers) waiting for the next new table
+for (const s of src) {
+    const d = s.arr ? null : dst.find((x) => !x.arr && x.name === s.name);
+    if (d) {
+        const have = new Set(d.lines.map(keyOf).filter(Boolean));
+        const add = s.lines.slice(s.name === null ? 0 : 1)
+            .filter((l) => keyOf(l) && !have.has(keyOf(l)));
+        let i = d.lines.length;
+        while (i > 0 && d.lines[i - 1].trim() === "") i--;
+        d.lines.splice(i, 0, ...add);
+        if (s.name === null) carry = s.lines.filter((l) => l.trim().startsWith("#"));
+    } else {
+        dst.push({ ...s, lines: ["", ...carry, ...s.lines] });
+        carry = [];
+    }
+}
+fs.writeFileSync(dstPath, dst.flatMap((s) => s.lines).join("\n") + "\n");
+' "$dst/$base" "$item" || echo "[gsd] Warning: could not merge GSD settings into $dst/$base" >&2
+        elif [ "$base" = hooks.json ]; then
+            node -e '
+const fs = require("fs");
+const [dstPath, srcPath] = process.argv.slice(1);
+// Codex reads both { "hooks": { Event: [...] } } and the flat { Event: [...] }.
+const events = (o) => (o.hooks && typeof o.hooks === "object") ? o.hooks : o;
+const d = JSON.parse(fs.readFileSync(dstPath, "utf8"));
+const s = JSON.parse(fs.readFileSync(srcPath, "utf8"));
+const into = events(d);
+for (const [evt, arr] of Object.entries(events(s))) {
+    if (!Array.isArray(arr)) continue;
+    into[evt] = (Array.isArray(into[evt]) ? into[evt] : []).concat(arr);
+}
+fs.writeFileSync(dstPath, JSON.stringify(d, null, 2) + "\n");
+' "$dst/$base" "$item" || echo "[gsd] Warning: could not merge GSD hooks into $dst/$base" >&2
+        else
+            echo "[gsd] Kept existing $dst/$base (GSD ships its own; not merged)" >&2
+        fi
+    done
+}
+if [ "$CLI" = codex ] && [ -d /opt/gsd-codex ] && [ ! -d /home/node/.codex/gsd-core ]; then
+    echo "[gsd] Injecting GSD framework into Codex state"
+    inject_gsd_codex /opt/gsd-codex /home/node/.codex
+    chown -R "$RUN_UID" /home/node/.codex
+fi
+
 # ── Gateway bundle: its codex-setup.sh configures Codex (idempotent, warn-only) ──
 run_bundle_setup() {
     [ -f "$1/codex-setup.sh" ] || return 0
